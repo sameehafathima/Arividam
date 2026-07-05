@@ -1,4 +1,4 @@
-# Mozhi
+# Arividam
 
 Voice-Based Smart Library Management System
 
@@ -8,7 +8,7 @@ A modern Android application that simplifies library operations using voice inte
 
 ## Overview
 
-Mozhi is an Android-based Smart Library Management System developed as a B.Tech Final Year Project. The application modernizes conventional library operations by integrating voice interaction, Optical Character Recognition (OCR), cloud-based data management, and secure authentication.
+Arividam is an Android-based Smart Library Management System developed as a B.Tech Final Year Project. The application modernizes conventional library operations by integrating voice interaction, Optical Character Recognition (OCR), cloud-based data management, and secure authentication.
 
 The system enables librarians to efficiently manage books, members, borrowing activities, and digital records while providing readers with an intuitive and accessible platform.
 
