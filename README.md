@@ -200,12 +200,14 @@ Add screenshots of:
 <table align="center">
   <tr>
     <td align="center">
-      <img width="1080" height="1080" alt="image" src="https://github.com/user-attachments/assets/f9dc40ad-d44e-42fe-b164-8bd07e826119" />
+   <img width="720" height="1600" alt="image" src="https://github.com/user-attachments/assets/fe7f8f68-285d-42ed-8519-e2dbc2a7bd3b" />
+
 <br>
       <b>Login Screen</b>
     </td>
     <td align="center">
-      <img width="1080" height="1080" alt="image" src="https://github.com/user-attachments/assets/357553e8-d59e-42eb-89a8-d95af13d46ef" />
+     <img width="720" height="1600" alt="image" src="https://github.com/user-attachments/assets/dcb1e8d0-511e-46c9-a608-1b075b6cc8b5" />
+
 <br>
       <b>Register</b>
     </td>
@@ -213,8 +215,8 @@ Add screenshots of:
 
   <tr>
     <td align="center">
-     <img width="707" height="4160" alt="image" src="https://github.com/user-attachments/assets/c5bb3bf7-816f-4431-a680-198488cd397a" />
->
+     <img width="720" height="1600" alt="image" src="https://github.com/user-attachments/assets/51b27b6f-a618-4fc8-a22b-1e645d1c9465" />
+
 <br>
       <b>admin dashboard</b>
     </td>
@@ -228,7 +230,8 @@ Add screenshots of:
 
   <tr>
     <td align="center">
-     <img width="720" height="1470" alt="image" src="https://github.com/user-attachments/assets/f27f5daf-7d77-4bae-82b6-899556ebf053" />
+    <img width="720" height="1600" alt="image" src="https://github.com/user-attachments/assets/7a73bbb2-5145-477a-9742-64c549f444d3" />
+
 <br>
       <b>OCR Scanner</b>
     </td>
