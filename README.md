@@ -221,7 +221,8 @@ Add screenshots of:
       <b>admin dashboard</b>
     </td>
     <td align="center">
-     <img width="1045" height="4160" alt="image" src="https://github.com/user-attachments/assets/a32e8580-a070-4d28-8296-85df68d11909" />
+     <img width="720" height="1600" alt="image" src="https://github.com/user-attachments/assets/7a73bbb2-5145-477a-9742-64c549f444d3" />
+
 <br>
       <b>user dashboard</b>
     </td>
@@ -230,7 +231,8 @@ Add screenshots of:
 
   <tr>
     <td align="center">
-    <img width="720" height="1600" alt="image" src="https://github.com/user-attachments/assets/7a73bbb2-5145-477a-9742-64c549f444d3" />
+<img width="720" height="1600" alt="image" src="https://github.com/user-attachments/assets/0dcd2e9a-06ba-40ee-9d25-9e6cfdab8203" />
+
 
 <br>
       <b>OCR Scanner</b>
