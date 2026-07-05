@@ -41,7 +41,7 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.EmailAuthProvider
 import com.google.firebase.firestore.FirebaseFirestore
 import android.util.Log
-import com.nit.voicelibrarymvp.ui.theme.MozhiTheme
+import com.nit.voicelibrarymvp.ui.theme.ArividamTheme
 import java.util.Locale
 
 class RegisterActivity : ComponentActivity() {
@@ -67,7 +67,7 @@ class RegisterActivity : ComponentActivity() {
         val isExistingUser = auth.currentUser != null
 
         setContent {
-            MozhiTheme(darkTheme = isDarkMode) {
+            ArividamTheme(darkTheme = isDarkMode) {
                 RegisterScreen(
                     isLoading = isLoading,
                     errorMessage = errorMessage,

@@ -47,7 +47,7 @@ import com.google.firebase.firestore.FirebaseFirestore
 import androidx.lifecycle.lifecycleScope
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.QuerySnapshot
-import com.nit.voicelibrarymvp.ui.theme.MozhiTheme
+import com.nit.voicelibrarymvp.ui.theme.ArividamTheme
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import java.util.Locale
@@ -86,7 +86,7 @@ class LoginActivity : ComponentActivity() {
         }
 
         setContent {
-            MozhiTheme(darkTheme = isDarkMode) {
+            ArividamTheme(darkTheme = isDarkMode) {
                 LoginScreen(
                     isLoading = isLoading,
                     errorMessage = errorMessage,
@@ -261,7 +261,7 @@ class LoginActivity : ComponentActivity() {
         getSharedPreferences("user_prefs", MODE_PRIVATE).edit()
             .putString("libraryId", libId)
             .putString("userRole", role)
-            .apply()
+            .commit()
 
         speak("സ്വാഗതം $name")
         val intent = Intent(this, MainActivity::class.java).apply {
@@ -364,7 +364,7 @@ class LoginActivity : ComponentActivity() {
             
             Spacer(modifier = Modifier.height(20.dp))
             Text(
-                text = "Mozhi",
+                text = "Arividam",
                 fontSize = 32.sp,
                 fontWeight = FontWeight.ExtraBold,
                 color = mainColor,

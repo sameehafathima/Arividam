@@ -55,19 +55,14 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.storage.FirebaseStorage
 import com.nit.voicelibrarymvp.ScanType
-import com.nit.voicelibrarymvp.ui.theme.MozhiTheme
+import com.nit.voicelibrarymvp.ui.theme.ArividamTheme
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import androidx.compose.material.icons.filled.CameraAlt
-import kotlinx.coroutines.tasks.await
-import kotlinx.coroutines.withContext
-import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.FactCheck
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -75,6 +70,7 @@ import java.util.Locale
 
 object CategoryConstants {
     val standardCategories = listOf(
+        "Fiction",
         "Novel",
         "Short Stories",
         "Autobiography",
@@ -87,6 +83,7 @@ object CategoryConstants {
     fun mapToStandard(input: String): String {
         val lower = input.lowercase()
         return when {
+            lower.contains("fiction") || lower.contains("കഥാസാഹിത്യം") -> "Fiction"
             lower.contains("novel") || lower.contains("നോവൽ") -> "Novel"
             lower.contains("story") || lower.contains("കഥ") || lower.contains("stories") || lower.contains("ചെറുകഥകൾ") -> "Short Stories"
             lower.contains("autobiography") || lower.contains("ആത്മകഥ") -> "Autobiography"
@@ -112,6 +109,7 @@ class MainActivity : ComponentActivity() {
     private var isDarkMode by mutableStateOf(false)
     private var allBooks by mutableStateOf(listOf<Book>())
     private var filteredBooks by mutableStateOf(listOf<Book>())
+    private var groupedBooks by mutableStateOf(listOf<List<Book>>())
     private var statusText by mutableStateOf("Ready to assist you")
     private var currentMode = ""
     private var selectedBook: Book? = null
@@ -133,6 +131,7 @@ class MainActivity : ComponentActivity() {
     private var selectedCategory by mutableStateOf("All")
     private var currentSearchQuery by mutableStateOf("")
     private var showMyBooksOnly by mutableStateOf(false)
+    private val registrations = mutableListOf<com.google.firebase.firestore.ListenerRegistration>()
     private var currentScanType by mutableStateOf(ScanType.BOOK_COVER)
     private var preFilledBook by mutableStateOf<Book?>(null)
     private var importResult by mutableStateOf<ExcelHelper.ImportResult?>(null)
@@ -141,15 +140,37 @@ class MainActivity : ComponentActivity() {
     private var allBorrowHistory by mutableStateOf(listOf<BorrowRequest>())
     private var notifications by mutableStateOf(listOf<BorrowRequest>())
     private var currentBookBorrowers by mutableStateOf(listOf<BorrowRequest>())
-    private var recommendedBooks by mutableStateOf(listOf<Book>())
     private var showMemberIdDialog by mutableStateOf(false)
     private var onVoiceResult: ((String) -> Unit)? = null
 
-    // Delete & Undo Logic
     private var showDeleteOptionsDialog by mutableStateOf(false)
     private var bookToModify: Book? = null
     private var lastDeletedBook: Book? = null
+    private var currentGroupToModify by mutableStateOf(listOf<Book>())
     private val snackbarHostState = SnackbarHostState()
+
+    // --- Add Book Manual State (for Auto-Save) ---
+    private var abIsMalayalam by mutableStateOf(true)
+    private var abIsbn by mutableStateOf("")
+    private var abAccessionNumber by mutableStateOf("")
+    private var abTitle by mutableStateOf("")
+    private var abAuthor by mutableStateOf("")
+    private var abCategory by mutableStateOf("")
+    private var abPublisherName by mutableStateOf("")
+    private var abYearOfPublication by mutableStateOf("")
+    private var abCallNumber by mutableStateOf("")
+    private var abIsCallNumberAuto by mutableStateOf(true)
+    private var abLocation by mutableStateOf("")
+    private var abPrice by mutableStateOf("")
+    private var abBookType by mutableStateOf("Normal")
+    private var abLanguage by mutableStateOf("Malayalam")
+    private var abNumberOfCopies by mutableStateOf("1")
+    private var abAccessionNumbers by mutableStateOf(listOf(""))
+    private var abIsbns by mutableStateOf(listOf(""))
+    private var abLocations by mutableStateOf(listOf(""))
+    private var abPrices by mutableStateOf(listOf(""))
+    private var abBookTypes by mutableStateOf(listOf("Normal"))
+    private var abUnavailabilityReason by mutableStateOf("")
 
     // --- Voice Assistant State ---
     private var isMalayalamBook by mutableStateOf(false)
@@ -157,14 +178,15 @@ class MainActivity : ComponentActivity() {
     private var voiceAddTitle by mutableStateOf("")
     private var voiceAddAuthor by mutableStateOf("")
     private var voiceAddCategory by mutableStateOf("")
-    private var voiceAddLocation by mutableStateOf("")
-    private var voiceAddIsbn by mutableStateOf("")
-    private var voiceAddAccession by mutableStateOf("")
-    private var voiceAddCallNumber by mutableStateOf("")
     private var voiceAddPublisher by mutableStateOf("")
     private var voiceAddYear by mutableStateOf("")
-    private var voiceAddPrice by mutableStateOf("")
     private var voiceAddCopies by mutableIntStateOf(1)
+    private var voiceAddCurrentAccIndex by mutableIntStateOf(0)
+    private var voiceAddAccList by mutableStateOf(mutableListOf<String>())
+    private var voiceAddIsbnList by mutableStateOf(mutableListOf<String>())
+    private var voiceAddLocList by mutableStateOf(mutableListOf<String>())
+    private var voiceAddPriceList by mutableStateOf(mutableListOf<String>())
+    private var voiceAddTypeList by mutableStateOf(mutableListOf<String>())
     private var voiceAddLanguage by mutableStateOf("English")
     private var voiceAddBookType by mutableStateOf("Normal")
 
@@ -172,12 +194,15 @@ class MainActivity : ComponentActivity() {
     private var speechRecognizer: SpeechRecognizer? = null
     private var mediaPlayer: MediaPlayer? = null
     private var isRecording = false
+    private var pendingVoiceAction: (() -> Unit)? = null
 
     private val audioPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
         if (isGranted) {
-            startVoiceAssistant()
+            pendingVoiceAction?.invoke()
+            pendingVoiceAction = null
         } else {
             showToast("Audio permission required")
+            pendingVoiceAction = null
         }
     }
 
@@ -197,71 +222,136 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // Initialize Firebase and Room first
         auth = FirebaseAuth.getInstance()
         roomDb = AppDatabase.getDatabase(this)
+        storage = FirebaseStorage.getInstance()
         
-        // Explicitly enable offline persistence
         val settings = com.google.firebase.firestore.FirebaseFirestoreSettings.Builder()
             .setPersistenceEnabled(true)
             .build()
         db = FirebaseFirestore.getInstance()
         db.firestoreSettings = settings
 
-        storage = FirebaseStorage.getInstance()
+        // Load preferences
+        val prefs = getSharedPreferences("user_prefs", MODE_PRIVATE)
+        isDarkMode = prefs.getBoolean("isDarkMode", false)
         
-        userRole = intent.getStringExtra("USER_ROLE") ?: getSharedPreferences("user_prefs", MODE_PRIVATE).getString("userRole", "USER") ?: "USER"
-        userName = intent.getStringExtra("USER_NAME") ?: "Guest"
-        isDarkMode = getSharedPreferences("user_prefs", MODE_PRIVATE).getBoolean("isDarkMode", false)
-        
+        // Try to get libraryId from Intent or Prefs
         val passedLibId = intent.getStringExtra("LIBRARY_ID")
-        if (passedLibId != null && passedLibId.isNotEmpty()) {
+        val passedRole = intent.getStringExtra("USER_ROLE")
+        val passedName = intent.getStringExtra("USER_NAME")
+        
+        if (!passedLibId.isNullOrEmpty()) {
             libraryId = passedLibId
+            prefs.edit().putString("libraryId", passedLibId).apply()
         } else {
-            libraryId = getSharedPreferences("user_prefs", MODE_PRIVATE).getString("libraryId", "") ?: ""
+            libraryId = prefs.getString("libraryId", "") ?: ""
+        }
+        
+        if (!passedRole.isNullOrEmpty()) {
+            userRole = passedRole
+            prefs.edit().putString("userRole", passedRole).apply()
+        } else {
+            userRole = prefs.getString("userRole", "USER") ?: "USER"
+        }
+        
+        if (!passedName.isNullOrEmpty()) {
+            userName = passedName
+            prefs.edit().putString("userName", passedName).apply()
+        } else {
+            userName = prefs.getString("userName", "Guest") ?: "Guest"
         }
 
-        if (libraryId.isEmpty()) {
-            // If libraryId is missing, something is wrong, go back to login and sign out to prevent loops
-            auth.signOut()
-            startActivity(Intent(this, LoginActivity::class.java))
-            finish()
+        // If libraryId is STILL missing, but user is logged in, we must fetch it
+        if (libraryId.isEmpty() && auth.currentUser != null) {
+            lifecycleScope.launch {
+                try {
+                    val doc = db.collection("users").document(auth.currentUser!!.uid).get().await()
+                    val id = doc.getString("library_id") ?: doc.getString("libraryId") ?: ""
+                    val role = doc.getString("role") ?: "USER"
+                    val name = doc.getString("name") ?: doc.getString("fullName") ?: "User"
+                    
+                    if (id.isNotEmpty()) {
+                        libraryId = id
+                        userRole = role
+                        userName = name
+                        prefs.edit()
+                            .putString("libraryId", id)
+                            .putString("userRole", role)
+                            .putString("userName", name)
+                            .apply()
+                        
+                        // Restart listeners with the correct ID
+                        startDataListeners()
+                    } else {
+                        handleMissingLibraryId()
+                    }
+                } catch (e: Exception) {
+                    Log.e("MainActivity", "Failed to fetch user profile", e)
+                    handleMissingLibraryId()
+                }
+            }
+        } else if (libraryId.isEmpty()) {
+            handleMissingLibraryId()
             return
         }
 
-        initTTS()
-        listenForBooks()
-        listenForBorrowRequests()
-        listenForNotifications()
-        refreshRecommendations()
-
-        // One-time Database fresh start trigger (uncomment to wipe data once)
-        // wipeLibraryData()
+        startDataListeners()
 
         setContent {
-            MozhiTheme(darkTheme = isDarkMode) {
+            ArividamTheme(darkTheme = isDarkMode) {
                 MainDashboard()
+
                 if (showAddBookDialog) {
+                    LaunchedEffect(showAddBookDialog) {
+                        if (showAddBookDialog && preFilledBook != null) {
+                            val book = preFilledBook!!
+                            abTitle = book.title
+                            abAuthor = book.author
+                            abIsbn = book.isbn ?: ""
+                            abPublisherName = book.publisherName ?: ""
+                            abYearOfPublication = book.yearOfPublication?.toString() ?: ""
+                            abCategory = book.category
+                            abLocation = book.location
+                            abPrice = book.price?.toString() ?: ""
+                            abLanguage = book.language
+                            abBookType = book.bookType
+                            abAccessionNumbers = listOf(book.accessionNumber)
+                            abIsbns = listOf(book.isbn ?: "")
+                            abLocations = listOf(book.location)
+                            abPrices = listOf(book.price?.toString() ?: "")
+                            abBookTypes = listOf(book.bookType)
+                            abNumberOfCopies = "1"
+                        }
+                    }
                     AddBookDialog(
-                        initialBook = preFilledBook,
                         onDismiss = { 
-                            showAddBookDialog = false
-                            preFilledBook = null 
+                            showAddBookDialog = false 
+                            preFilledBook = null
                         },
                         onVoiceInput = { isMal, callback -> 
                             isMalayalamBook = isMal
                             startVoiceDictation(callback) 
+                        },
+                        onSave = { books ->
+                            lifecycleScope.launch {
+                                saveMultipleBooksToFirestore(books)
+                                showAddBookDialog = false
+                                preFilledBook = null
+                            }
                         }
-                    ) { newBook ->
-                        lifecycleScope.launch {
-                            saveBookToFirestore(newBook)
-                            showAddBookDialog = false
-                            preFilledBook = null
-                        }
-                    }
+                    )
                 }
+
                 if (showEditBookDialog && selectedBook != null) {
+                    val currentGroup = groupedBooks.find { it.any { b -> b.id == selectedBook!!.id } } ?: listOf(selectedBook!!)
+                    val groupTotal = currentGroup.sumOf { it.numberOfCopies }
+                    
                     EditBookDialog(
                         book = selectedBook!!,
+                        groupTotal = groupTotal,
                         onDismiss = { showEditBookDialog = false },
                         onVoiceInput = { isMal, callback -> 
                             isMalayalamBook = isMal
@@ -270,6 +360,12 @@ class MainActivity : ComponentActivity() {
                         onSave = { updatedBook ->
                             updateBookInFirestore(updatedBook)
                             showEditBookDialog = false
+                        },
+                        onSaveMulti = { newBooks ->
+                            lifecycleScope.launch {
+                                saveMultipleBooksToFirestore(newBooks)
+                                showEditBookDialog = false
+                            }
                         }
                     )
                 }
@@ -282,13 +378,13 @@ class MainActivity : ComponentActivity() {
                                 lifecycleScope.launch {
                                     statusText = "Importing books..."
                                     
-                                    // Get initial max accession number
+                                    // Get initial max stock number
                                     var currentMaxAcc = 0
                                     val snapshot = db.collection("books")
-                                        .whereEqualTo("libraryId", libraryId)
+                                        .whereEqualTo("library_id", libraryId)
                                         .get().await()
                                     snapshot.documents.forEach { doc ->
-                                        val acc = doc.getString("accessionNumber") ?: ""
+                                        val acc = doc.getString("accession_number") ?: doc.getString("accessionNumber") ?: ""
                                         val num = acc.filter { it.isDigit() }.toIntOrNull() ?: 0
                                         if (num > currentMaxAcc) currentMaxAcc = num
                                     }
@@ -307,7 +403,7 @@ class MainActivity : ComponentActivity() {
                                             location = "Unknown"  // Default for register scan
                                         )
                                         
-                                        saveBookToFirestore(bookToSave)
+                                        saveMultipleBooksToFirestore(listOf(bookToSave))
                                     }
                                     showToast("Imported ${list.size} books")
                                     statusText = "Ready"
@@ -315,7 +411,7 @@ class MainActivity : ComponentActivity() {
                             } else {
                                 val info = list.firstOrNull()
                                 if (info != null) {
-                                    val accession = if (info.accession.isBlank()) calculateNextAccession() else info.accession
+                                    val accession = info.accession
                                     preFilledBook = Book(
                                         isbn = info.isbn,
                                         accessionNumber = accession,
@@ -355,7 +451,6 @@ class MainActivity : ComponentActivity() {
                 // Add Overdue & Reminder Check
                 LaunchedEffect(allBooks) {
                     if (userRole == "USER") {
-                        refreshRecommendations()
                         val myUid = auth.currentUser?.uid ?: return@LaunchedEffect
                         allBooks.find { book -> book.copies.any { it.borrowerId == myUid } }?.let { myBook ->
                             val myCopy = myBook.copies.find { it.borrowerId == myUid }
@@ -421,7 +516,10 @@ class MainActivity : ComponentActivity() {
                     MembersDialog(
                         users = allLibraryUsers,
                         onDismiss = { showMembersDialog = false },
-                        onUserClick = { user: User -> selectedUserForDetail = user }
+                        onUserClick = { user: User -> 
+                            selectedUserForDetail = user
+                            showMembersDialog = false
+                        }
                     )
                 }
 
@@ -478,17 +576,35 @@ class MainActivity : ComponentActivity() {
                 if (showDeleteOptionsDialog && bookToModify != null) {
                     DeleteOptionsDialog(
                         bookTitle = bookToModify!!.title,
-                        copyCount = bookToModify!!.numberOfCopies,
-                        onDismiss = { showDeleteOptionsDialog = false; bookToModify = null },
-                        onDeleteEntire = {
-                            deleteBookWithUndo(bookToModify!!)
+                        copyCount = maxOf(currentGroupToModify.size, bookToModify!!.numberOfCopies),
+                        onDismiss = { 
                             showDeleteOptionsDialog = false
                             bookToModify = null
+                            currentGroupToModify = emptyList()
+                        },
+                        onDeleteEntire = {
+                            if (currentGroupToModify.size > 1) {
+                                currentGroupToModify.forEach { db.collection("books").document(it.id).delete() }
+                                speak("${bookToModify!!.title} പൂർണ്ണമായും ഒഴിവാക്കി.")
+                            } else {
+                                deleteBookWithUndo(bookToModify!!)
+                            }
+                            showDeleteOptionsDialog = false
+                            bookToModify = null
+                            currentGroupToModify = emptyList()
                         },
                         onReduceCopy = {
-                            reduceCopyCount(bookToModify!!)
+                            if (currentGroupToModify.size > 1) {
+                                // Multi-doc model: just delete one doc
+                                db.collection("books").document(bookToModify!!.id).delete()
+                                speak("ഒരു കോപ്പി ഒഴിവാക്കി.")
+                            } else {
+                                // Single-doc model: update list
+                                reduceCopyCount(bookToModify!!)
+                            }
                             showDeleteOptionsDialog = false
                             bookToModify = null
+                            currentGroupToModify = emptyList()
                         }
                     )
                 }
@@ -496,10 +612,31 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun startDataListeners() {
+        if (libraryId.isEmpty()) return
+        
+        // Remove existing listeners before re-attaching
+        registrations.forEach { it.remove() }
+        registrations.clear()
+        
+        initTTS()
+        listenForBooks()
+        listenForBorrowRequests()
+        listenForNotifications()
+    }
+
+    private fun handleMissingLibraryId() {
+        Log.e("MainActivity", "libraryId is empty, redirecting to Login")
+        Toast.makeText(this, "Session expired. Please login again.", Toast.LENGTH_SHORT).show()
+        auth.signOut()
+        startActivity(Intent(this, LoginActivity::class.java))
+        finish()
+    }
+
     private fun listenForNotifications() {
         if (userRole == "USER") {
             val myUid = auth.currentUser?.uid ?: return
-            db.collection("borrow_requests")
+            val reg = db.collection("borrow_requests")
                 .whereEqualTo("userUid", myUid)
                 .whereEqualTo("library_id", libraryId)
                 .addSnapshotListener { snapshot, _ ->
@@ -511,12 +648,13 @@ class MainActivity : ComponentActivity() {
                         if (showMyBooksOnly) applyCurrentFilters()
                     }
                 }
+            registrations.add(reg)
         }
     }
 
     private fun listenForBorrowRequests() {
         if (userRole == "ADMIN") {
-            db.collection("borrow_requests")
+            val reg1 = db.collection("borrow_requests")
                 .whereEqualTo("library_id", libraryId)
                 .addSnapshotListener { snapshot, _ ->
                     if (snapshot != null) {
@@ -533,9 +671,10 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
+            registrations.add(reg1)
             
             // Also listen for members (filter for USER role only)
-            db.collection("users")
+            val reg2 = db.collection("users")
                 .whereEqualTo("library_id", libraryId)
                 .whereEqualTo("role", "USER")
                 .addSnapshotListener { snapshot, error ->
@@ -544,20 +683,28 @@ class MainActivity : ComponentActivity() {
                         return@addSnapshotListener
                     }
                     if (snapshot != null) {
-                        val users = snapshot.documents.mapNotNull { it.toObject(User::class.java) }
+                        val users = snapshot.documents.mapNotNull { doc ->
+                            doc.toObject(User::class.java)?.apply { uid = doc.id }
+                        }
                         Log.d("MainActivity", "Found ${users.size} users for library $libraryId")
                         allLibraryUsers = users
                     }
                 }
+            registrations.add(reg2)
         }
     }
 
     private fun initTTS() {
         tts = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                tts.language = Locale("ml", "IN")
-                setupTtsListener()
-                speak("സ്വാഗതം, $userName. ലൈബ്രറി അസിസ്റ്റന്റ് ഇപ്പോൾ സജ്ജമാണ്.")
+                // Use runOnUiThread to ensure tts variable is assigned if onInit was synchronous
+                runOnUiThread {
+                    if (::tts.isInitialized) {
+                        tts.language = Locale("ml", "IN")
+                        setupTtsListener()
+                        speak("സ്വാഗതം, $userName. ലൈബ്രറി അസിസ്റ്റന്റ് ഇപ്പോൾ സജ്ജമാണ്.")
+                    }
+                }
             }
         }
     }
@@ -571,10 +718,10 @@ class MainActivity : ComponentActivity() {
                 Log.d("VoiceFlow", "TTS Done: $id")
                 runOnUiThread {
                     if (id != null && (id.endsWith("_prompt"))) {
-                        // Increased delay to 1000ms to ensure the microphone hardware is fully released
+                        // Reduced delay to 400ms to improve responsiveness while still ensuring hardware release
                         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                             launchSpeechRecognizer()
-                        }, 1000)
+                        }, 400)
                     }
                 }
             }
@@ -585,7 +732,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun listenForBooks() {
-        db.collection("books")
+        val reg = db.collection("books")
             .whereEqualTo("library_id", libraryId)
             .addSnapshotListener { snapshot, _ ->
                 if (snapshot != null) {
@@ -601,16 +748,26 @@ class MainActivity : ComponentActivity() {
                                 ?: (data["numberOfCopies"] as? Number)?.toInt() ?: 1
                             
                             val copiesData = data["copies"] as? List<Map<String, Any>>
-                            val copiesList = copiesData?.map { c ->
+                            var copiesList = copiesData?.map { c ->
                                 BookCopy(
+                                    accessionNumber = c["accession_number"] as? String ?: c["accessionNumber"] as? String ?: "",
                                     copyNumber = c["copyNumber"] as? String ?: c["copy_number"] as? String ?: "",
                                     status = c["status"] as? String ?: "Available",
                                     borrowerId = c["borrower_id"] as? String ?: c["borrowerId"] as? String,
                                     borrowerName = c["borrowerName"] as? String ?: c["borrowername"] as? String,
                                     dueDate = (c["dueDate"] as? Number)?.toLong() ?: (c["due_date"] as? Number)?.toLong()
                                 )
-                            } ?: (1..numCopies).map { i ->
-                                BookCopy(copyNumber = "$accessionNumber-C$i", status = "Available")
+                            } ?: emptyList()
+
+                            if (copiesList.isEmpty() && numCopies > 0) {
+                                val docStatus = data["status"] as? String ?: "Available"
+                                copiesList = (1..numCopies).map { i ->
+                                    BookCopy(
+                                        accessionNumber = if (numCopies == 1) accessionNumber else "$accessionNumber-C$i",
+                                        copyNumber = if (numCopies == 1) accessionNumber else "$accessionNumber-C$i",
+                                        status = docStatus
+                                    )
+                                }
                             }
 
                             val bookToSave = Book(
@@ -624,7 +781,7 @@ class MainActivity : ComponentActivity() {
                                 yearOfPublication = (data["year_of_publication"] as? Number)?.toInt() ?: (data["yearOfPublication"] as? Number)?.toInt(),
                                 callNumber = data["call_number"] as? String ?: data["callNumber"] as? String,
                                 location = data["location"] as? String ?: "",
-                                price = (data["price"] as? Number)?.toDouble(),
+                                price = (data["price"] as? Number)?.toInt(),
                                 status = data["status"] as? String ?: "Available",
                                 numberOfCopies = numCopies,
                                 canBeBorrowed = data["can_be_borrowed"] as? Boolean ?: data["canBeBorrowed"] as? Boolean ?: true,
@@ -663,6 +820,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+        registrations.add(reg)
     }
 
     private fun applyCurrentFilters() {
@@ -698,6 +856,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         filteredBooks = filtered
+        groupedBooks = filtered.groupBy { it.title.lowercase().trim() to it.author.lowercase().trim() }.values.toList()
     }
 
     private fun calculateNextAccession(): String {
@@ -746,14 +905,20 @@ class MainActivity : ComponentActivity() {
                         Spacer(modifier = Modifier.width(12.dp))
                         
                         Text(
-                            "Mozhi",
+                            "Arividam",
                             fontSize = 20.sp, 
                             fontWeight = FontWeight.Bold, 
                             color = mainColor,
                             modifier = Modifier.weight(1f)
                         )
-                        
                         Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = { 
+                                startDataListeners()
+                                showToast("Dashboard refreshed")
+                            }) {
+                                Icon(Icons.Default.Refresh, null, tint = mainColor)
+                            }
+
                             IconButton(onClick = { 
                                 if (userRole == "ADMIN") showBorrowRequestsDialog = true 
                                 else showUserNotificationsDialog = true
@@ -1010,7 +1175,7 @@ class MainActivity : ComponentActivity() {
                                 modifier = Modifier.weight(1f),
                                 containerColor = mainColor
                             ) {
-                                preFilledBook = Book(accessionNumber = calculateNextAccession())
+                                preFilledBook = Book(accessionNumber = "")
                                 showAddBookDialog = true 
                             }
                             
@@ -1153,23 +1318,6 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                if (userRole == "USER" && recommendedBooks.isNotEmpty()) {
-                    item {
-                        Spacer(modifier = Modifier.height(32.dp))
-                        Text(
-                            "Recommended for You", 
-                            fontWeight = FontWeight.Bold, 
-                            fontSize = 18.sp, 
-                            color = mainColor
-                        )
-                        Spacer(modifier = Modifier.height(12.dp))
-                    }
-                    
-                    items(recommendedBooks.groupBy { it.title.lowercase() to it.author.lowercase() }.values.toList()) { group ->
-                        DashboardBookItem(group)
-                    }
-                }
-
                 item {
                     Spacer(modifier = Modifier.height(32.dp))
                     Text(
@@ -1181,7 +1329,7 @@ class MainActivity : ComponentActivity() {
                     Spacer(modifier = Modifier.height(12.dp))
                 }
 
-                items(filteredBooks.groupBy { it.title.lowercase() to it.author.lowercase() }.values.toList()) { group ->
+                items(groupedBooks) { group ->
                     DashboardBookItem(group)
                 }
                 
@@ -1278,12 +1426,30 @@ class MainActivity : ComponentActivity() {
     @Composable
     fun DashboardBookItem(group: List<Book>) {
         val primaryBook = group.first()
-        val totalCopies = primaryBook.numberOfCopies
-        val availableCopies = primaryBook.copies.count { it.status == "Available" }
+        val totalCopiesInGroup = group.sumOf { it.numberOfCopies }
+        
+        // Accurate counts based on individual copies
+        val allCopies = group.flatMap { b ->
+            if (b.copies.isEmpty() && b.numberOfCopies > 0) {
+                // Fallback for documents that haven't synced the copies list yet
+                val docStatus = b.status
+                (1..b.numberOfCopies).map { i ->
+                    BookCopy(
+                        accessionNumber = if (b.numberOfCopies == 1) b.accessionNumber else "${b.accessionNumber}-C$i",
+                        copyNumber = if (b.numberOfCopies == 1) b.accessionNumber else "${b.accessionNumber}-C$i",
+                        status = docStatus
+                    )
+                }
+            } else b.copies
+        }
+        
+        val availableCopies = allCopies.count { it.status == "Available" }
+        val borrowedCopiesCount = allCopies.count { it.status == "Borrowed" }
+        
         val displayStatus = when {
             availableCopies > 0 -> "Available"
-            totalCopies > 0 -> "Borrowed"
-            else -> "Unavailable"
+            borrowedCopiesCount > 0 -> "Borrowed"
+            else -> primaryBook.status
         }
         val mainColor = if (isDarkMode) Color(0xFFD7CCC8) else Color(0xFF452719)
         val cardBg = if (isDarkMode) Color(0xFF1E1916) else Color.White
@@ -1298,7 +1464,7 @@ class MainActivity : ComponentActivity() {
         ) {
             var showReviews by remember { mutableStateOf(false) }
             var showCopies by remember { mutableStateOf(false) }
-            val groupIds = group.map { it.id }.toSet()
+                    val groupIds = group.map { it.id }.toSet()
             val hasActiveRequest = notifications.any { 
                 it.bookId in groupIds && (it.status == "PENDING" || it.status == "APPROVED")
             }
@@ -1319,13 +1485,21 @@ class MainActivity : ComponentActivity() {
                             modifier = Modifier.padding(top = 2.dp)
                         )
                     }
-                    val statusColor = if (displayStatus == "Available") Color(0xFF4CAF50) else Color(0xFFF44336)
+                    val statusColor = when {
+                        availableCopies > 0 -> Color(0xFF4CAF50) // Green
+                        borrowedCopiesCount > 0 -> Color(0xFF2196F3) // Blue
+                        else -> Color(0xFFF44336) // Red
+                    }
                     Surface(
                         color = statusColor.copy(alpha = 0.1f),
                         shape = RoundedCornerShape(12.dp)
                     ) {
                         Text(
-                            text = displayStatus, 
+                            text = when {
+                                availableCopies > 0 -> "Available"
+                                borrowedCopiesCount > 0 -> "Borrowed"
+                                else -> primaryBook.status
+                            },
                             color = statusColor, 
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp), 
                             fontSize = 12.sp, 
@@ -1344,8 +1518,10 @@ class MainActivity : ComponentActivity() {
                 ) {
                     BookInfoChip(Icons.AutoMirrored.Filled.MenuBook, primaryBook.category.ifBlank { "കഥ" })
                     BookInfoChip(Icons.Default.Place, "Rack: ${primaryBook.location}")
-                    primaryBook.isbn?.let { if(it.isNotBlank()) BookInfoChip(Icons.Default.QrCode, "ISBN: $it") }
-                    BookInfoChip(Icons.Default.LibraryBooks, "Total: $totalCopies ($availableCopies Avail)")
+                    if (totalCopiesInGroup == 1) {
+                        BookInfoChip(Icons.Default.QrCode, "Stock: ${primaryBook.accessionNumber}")
+                    }
+                    BookInfoChip(Icons.Default.LibraryBooks, "Total: $totalCopiesInGroup | $availableCopies Avail")
                     primaryBook.unavailabilityReason?.let { reason ->
                         if (reason.isNotBlank()) {
                             BookInfoChip(Icons.Default.Info, "Reason: $reason")
@@ -1377,7 +1553,7 @@ class MainActivity : ComponentActivity() {
                     )
                     Spacer(modifier = Modifier.width(12.dp))
                     Text(
-                        text = if(showCopies) "Hide Copies" else "View Copies", 
+                        text = if(showCopies) "Hide Items" else "View Items", 
                         color = accentColor, 
                         fontSize = 13.sp, 
                         fontWeight = FontWeight.Bold,
@@ -1387,25 +1563,62 @@ class MainActivity : ComponentActivity() {
 
                 if (showCopies) {
                     Spacer(modifier = Modifier.height(12.dp))
-                    primaryBook.copies.forEach { copy ->
-                        Card(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), 
-                            colors = CardDefaults.cardColors(containerColor = if (isDarkMode) Color(0xFF2D2420) else Color(0xFFFAF9F6)),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Row(modifier = Modifier.padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                Column {
-                                    Text(copy.copyNumber, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = mainColor)
-                                    Text(copy.status, fontSize = 11.sp, color = if(copy.status == "Available") Color(0xFF4CAF50) else Color(0xFFF44336))
-                                }
-                                if (userRole == "USER" && copy.status == "Available" && primaryBook.canBeBorrowed) {
-                                    Button(
-                                        onClick = { if (!hasActiveRequest) requestBorrow(primaryBook, copy.copyNumber) },
-                                        enabled = !hasActiveRequest,
-                                        shape = RoundedCornerShape(8.dp),
-                                        modifier = Modifier.height(32.dp),
-                                        colors = ButtonDefaults.buttonColors(containerColor = mainColor, contentColor = if (isDarkMode) Color(0xFF452719) else Color.White)
-                                    ) { Text(if (hasActiveRequest) "Requested" else "Request", fontSize = 11.sp) }
+                    group.forEach { bookItem ->
+                        val itemCopies = if (bookItem.copies.isEmpty() && bookItem.numberOfCopies > 0) {
+                            val docStatus = bookItem.status
+                            (1..bookItem.numberOfCopies).map { i ->
+                                BookCopy(
+                                    accessionNumber = if (bookItem.numberOfCopies == 1) bookItem.accessionNumber else "${bookItem.accessionNumber}-C$i",
+                                    copyNumber = if (bookItem.numberOfCopies == 1) bookItem.accessionNumber else "${bookItem.accessionNumber}-C$i",
+                                    status = docStatus
+                                )
+                            }
+                        } else bookItem.copies
+
+                        itemCopies.forEach { copy ->
+                            Card(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), 
+                                colors = CardDefaults.cardColors(containerColor = if (isDarkMode) Color(0xFF2D2420) else Color(0xFFFAF9F6)),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Row(modifier = Modifier.padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text("Stock: ${copy.accessionNumber}", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = mainColor)
+                                        Text(copy.status, fontSize = 11.sp, color = if(copy.status == "Available") Color(0xFF4CAF50) else Color(0xFFF44336))
+                                        if (copy.borrowerName != null) {
+                                            Text("Borrowed by: ${copy.borrowerName}", fontSize = 10.sp, color = Color.Gray)
+                                        }
+                                        if (bookItem.isbn?.isNotBlank() == true) {
+                                            Text("ISBN: ${bookItem.isbn}", fontSize = 10.sp, color = Color.Gray)
+                                        }
+                                        Text("Rack: ${bookItem.location}", fontSize = 10.sp, color = Color.Gray)
+                                    }
+                                    
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        if (userRole == "ADMIN") {
+                                            if (copy.status == "Borrowed") {
+                                                IconButton(onClick = { returnBook(bookItem, copy.copyNumber) }) {
+                                                    Icon(Icons.Default.SettingsBackupRestore, null, tint = Color(0xFF4CAF50), modifier = Modifier.size(20.dp))
+                                                }
+                                            }
+                                            IconButton(onClick = { selectedBook = bookItem; showEditBookDialog = true }) {
+                                                Icon(Icons.Default.Edit, null, tint = mainColor, modifier = Modifier.size(20.dp))
+                                            }
+                                            IconButton(onClick = { 
+                                                if (copy.status == "Borrowed") {
+                                                    showToast("Cannot delete: This copy is currently lent out.")
+                                                } else {
+                                                    if (bookItem.numberOfCopies > 1) {
+                                                        reduceCopyCount(bookItem)
+                                                    } else {
+                                                        deleteBook(bookItem.id)
+                                                    }
+                                                }
+                                            }) {
+                                                Icon(Icons.Default.Delete, null, tint = Color(0xFFEF4444), modifier = Modifier.size(20.dp))
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1447,54 +1660,49 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                    if (userRole == "ADMIN") {
-                        IconButton(onClick = { 
-                            currentBookBorrowers = group.flatMap { b ->
-                                activeBorrows.filter { it.bookId == b.id }
-                            }
-                            showBorrowersDialog = true
-                        }) { Icon(Icons.Default.Groups, null, tint = mainColor) }
-                        IconButton(onClick = { selectedBook = primaryBook; showEditBookDialog = true }) { Icon(Icons.Default.Edit, null, tint = mainColor) }
-                        IconButton(onClick = { 
-                            if (primaryBook.copies.any { it.status == "Borrowed" }) {
-                                showToast("Cannot delete: Some copies are currently lent out.")
-                                speak("ഈ പുസ്തകം ആരുടെയോ കയ്യിലാണ്. അതിനാൽ ഒഴിവാക്കാൻ കഴിയില്ല.")
-                            } else {
-                                if (primaryBook.numberOfCopies > 1) {
-                                    bookToModify = primaryBook
-                                    showDeleteOptionsDialog = true
-                                } else {
-                                    deleteBookWithUndo(primaryBook)
-                                }
-                            }
-                        }) { Icon(Icons.Default.Delete, null, tint = Color(0xFFEF4444)) }
-                    }
-
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     if (userRole == "USER") {
-                        // Review Button for everyone
-                        IconButton(onClick = { selectedBook = primaryBook; showReviewDialog = true }) {
-                            Icon(Icons.Default.RateReview, null, tint = mainColor)
-                        }
-                    }
+                        val availableBook = group.find { it.status == "Available" }
+                        val hasAvailable = availableBook != null
 
-                    if (userRole == "USER") {
-                        val availableInGroup = primaryBook.copies.filter { it.status == "Available" && primaryBook.canBeBorrowed }
-                        if (availableInGroup.isNotEmpty()) {
-                            // Quick request for the first available copy
+                        if (primaryBook.canBeBorrowed) {
                             Button(
-                                onClick = { if (!hasActiveRequest) requestBorrow(primaryBook, availableInGroup.first().copyNumber) },
+                                onClick = { 
+                                    if (!hasActiveRequest && hasAvailable) {
+                                        // Request the first available book document in the group
+                                        requestBorrow(availableBook!!, availableBook.accessionNumber)
+                                    } else if (!hasAvailable) {
+                                        showToast("No copies available for borrowal at the moment.")
+                                    }
+                                },
                                 enabled = !hasActiveRequest,
                                 shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier.height(40.dp).padding(start = 8.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = mainColor, contentColor = if (isDarkMode) Color(0xFF452719) else Color.White)
+                                modifier = Modifier.height(40.dp).weight(1f).padding(end = 8.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (hasAvailable) mainColor else Color.Gray, 
+                                    contentColor = if (isDarkMode) Color(0xFF452719) else Color.White
+                                )
                             ) {
-                                Icon(if (hasActiveRequest) Icons.Default.Check else Icons.Default.LibraryAdd, null, modifier = Modifier.size(16.dp))
+                                Icon(
+                                    imageVector = when {
+                                        hasActiveRequest -> Icons.Default.Check
+                                        !hasAvailable -> Icons.Default.Info
+                                        else -> Icons.Default.LibraryAdd
+                                    }, 
+                                    null, 
+                                    modifier = Modifier.size(16.dp)
+                                )
                                 Spacer(modifier = Modifier.width(8.dp))
-                                Text(if (hasActiveRequest) "Already Requested" else "Request Borrow", fontWeight = FontWeight.Bold)
+                                Text(
+                                    text = when {
+                                        hasActiveRequest -> "Requested"
+                                        !hasAvailable -> "Out of Stock"
+                                        else -> "Request Borrow"
+                                    }, 
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
                         } else if (!primaryBook.canBeBorrowed) {
-                            // If book is marked non-borrowable, show contact admin
                             val phone = primaryBook.adminPhoneNumber
                             if (phone.isNotEmpty()) {
                                 Button(
@@ -1503,7 +1711,7 @@ class MainActivity : ComponentActivity() {
                                         startActivity(intent)
                                     },
                                     shape = RoundedCornerShape(12.dp),
-                                    modifier = Modifier.height(40.dp).padding(start = 8.dp),
+                                    modifier = Modifier.height(40.dp).weight(1f).padding(end = 8.dp),
                                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50), contentColor = Color.White)
                                 ) {
                                     Icon(Icons.Default.Phone, null, modifier = Modifier.size(16.dp))
@@ -1511,6 +1719,38 @@ class MainActivity : ComponentActivity() {
                                     Text("Contact", fontWeight = FontWeight.Bold)
                                 }
                             }
+                        }
+                        
+                        IconButton(onClick = { selectedBook = primaryBook; showReviewDialog = true }) {
+                            Icon(Icons.Default.RateReview, null, tint = mainColor)
+                        }
+                    }
+
+                    if (userRole == "ADMIN") {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            IconButton(onClick = { 
+                                currentBookBorrowers = group.flatMap { b ->
+                                    activeBorrows.filter { it.bookId == b.id }
+                                }
+                                showBorrowersDialog = true
+                            }) { Icon(Icons.Default.Groups, null, tint = mainColor) }
+                            IconButton(onClick = { selectedBook = primaryBook; showEditBookDialog = true }) { Icon(Icons.Default.Edit, null, tint = mainColor) }
+                            IconButton(onClick = { 
+                                val isAnyBorrowed = group.any { it.status == "Borrowed" || it.copies.any { c -> c.status == "Borrowed" } }
+                                if (isAnyBorrowed) {
+                                    showToast("Cannot delete: Some copies are currently lent out.")
+                                    speak("ഈ പുസ്തകം ആരുടെയോ കയ്യിലാണ്. അതിനാൽ ഒഴിവാക്കാൻ കഴിയില്ല.")
+                                } else {
+                                    val effectiveCopies = maxOf(group.size, primaryBook.numberOfCopies)
+                                    if (effectiveCopies > 1) {
+                                        bookToModify = primaryBook
+                                        currentGroupToModify = group
+                                        showDeleteOptionsDialog = true
+                                    } else {
+                                        deleteBookWithUndo(primaryBook)
+                                    }
+                                }
+                            }) { Icon(Icons.Default.Delete, null, tint = Color(0xFFEF4444)) }
                         }
                     }
                 }
@@ -1529,6 +1769,7 @@ class MainActivity : ComponentActivity() {
 
     private fun startVoiceAssistant() {
         if (androidx.core.content.ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            pendingVoiceAction = { startVoiceAssistant() }
             audioPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
             return
         }
@@ -1609,29 +1850,50 @@ class MainActivity : ComponentActivity() {
             }
             currentMode == "add_cat" -> {
                 voiceAddCategory = CategoryConstants.mapToStandard(text)
-                currentMode = "add_isbn"
-                speak("ISBN നമ്പർ ഇംഗ്ലീഷിൽ പറയുക", "add_isbn_prompt")
+                voiceAddCopies = 1
+                voiceAddAccList = mutableListOf("")
+                voiceAddIsbnList = mutableListOf("")
+                voiceAddLocList = mutableListOf("")
+                voiceAddPriceList = mutableListOf("")
+                voiceAddTypeList = mutableListOf("Normal")
+                voiceAddCurrentAccIndex = 0
+                currentMode = "add_acc_multi"
+                speak("അക്സെഷൻ നമ്പർ പറയുക", "add_acc_multi_prompt")
             }
-            currentMode == "add_isbn" -> {
-                voiceAddIsbn = LanguageUtils.transliterateToEnglish(text)
-                currentMode = "add_price"
-                speak("വില ഇംഗ്ലീഷിൽ പറയുക", "add_price_prompt")
+            currentMode == "add_acc_multi" -> {
+                voiceAddAccList[voiceAddCurrentAccIndex] = LanguageUtils.transliterateToEnglish(text)
+                currentMode = "add_isbn_multi"
+                speak("ISBN നമ്പർ ഇംഗ്ലീഷിൽ പറയുക", "add_isbn_multi_prompt")
             }
-            currentMode == "add_price" -> {
-                voiceAddPrice = text.filter { it.isDigit() || it == '.' }
-                currentMode = "add_loc"
-                speak("റാക്ക് നമ്പർ പറയുക", "add_loc_prompt")
+            currentMode == "add_isbn_multi" -> {
+                voiceAddIsbnList[voiceAddCurrentAccIndex] = LanguageUtils.transliterateToEnglishPreserveSpaces(text)
+                currentMode = "add_loc_multi"
+                speak("റാക്ക് നമ്പർ പറയുക", "add_loc_multi_prompt")
             }
-            currentMode == "add_loc" -> {
-                voiceAddLocation = LanguageUtils.formatRackNumber(text)
-                currentMode = "add_copies"
-                speak("ഈ പുസ്തകത്തിന്റെ എണ്ണം ഇംഗ്ലീഷിൽ പറയുക", "add_copies_prompt")
+            currentMode == "add_loc_multi" -> {
+                voiceAddLocList[voiceAddCurrentAccIndex] = LanguageUtils.formatRackNumber(text)
+                currentMode = "add_price_multi"
+                speak("വില ഇംഗ്ലീഷിൽ പറയുക", "add_price_multi_prompt")
             }
-            currentMode == "add_copies" -> {
-                val num = LanguageUtils.parseMalayalamNumber(text) ?: 1
-                voiceAddCopies = num
-                currentMode = "add_borrowable"
-                speak("ഈ പുസ്തകം വായ്പ നൽകാൻ കഴിയുമോ?", "add_borrowable_prompt")
+            currentMode == "add_price_multi" -> {
+                voiceAddPriceList[voiceAddCurrentAccIndex] = text.filter { it.isDigit() || it == '.' }
+                currentMode = "add_type_multi"
+                speak("പുസ്തകത്തിന്റെ തരം പറയുക. നോർമൽ അല്ലെങ്കിൽ റഫറൻസ്?", "add_type_multi_prompt")
+            }
+            currentMode == "add_type_multi" -> {
+                voiceAddTypeList[voiceAddCurrentAccIndex] = when {
+                    lower.contains("reference") || lower.contains("റഫറൻസ്") -> "Reference"
+                    else -> "Normal"
+                }
+                
+                if (voiceAddCurrentAccIndex < voiceAddCopies - 1) {
+                    voiceAddCurrentAccIndex++
+                    currentMode = "add_acc_multi"
+                    speak("${voiceAddCurrentAccIndex + 1}-ാമത്തെ പുസ്തകത്തിന്റെ അക്സെഷൻ നമ്പർ പറയുക", "add_acc_multi_prompt")
+                } else {
+                    currentMode = "add_borrowable"
+                    speak("ഈ പുസ്തകങ്ങൾ വായ്പ നൽകാൻ കഴിയുമോ?", "add_borrowable_prompt")
+                }
             }
             currentMode == "add_borrowable" -> {
                 isBorrowable = !isNo
@@ -1713,7 +1975,7 @@ class MainActivity : ComponentActivity() {
             }
 
             // --- Root Commands ---
-            lower.contains("തിരയുക") || lower.contains("search") || lower.contains("തിരച്ചിൽ") -> {
+            lower.contains("തിരയുക") || lower.contains("search") || lower.contains("തിരച്ചിൽ") || lower.contains("thirayuka") -> {
                 currentMode = "search_lang"
                 speak("പുസ്തകം മലയാളമാണോ? അതെ അല്ലെങ്കിൽ അല്ല എന്ന് പറയുക", "search_lang_prompt")
             }
@@ -1725,20 +1987,20 @@ class MainActivity : ComponentActivity() {
                 currentMode = "review_lang"
                 speak("പുസ്തകം മലയാളമാണോ? അതെ അല്ലെങ്കിൽ അല്ല എന്ന് പറയുക", "review_lang_prompt")
             }
-            lower.contains("ഒഴിവാക്കുക") || lower.contains("delete") || lower.contains("remove") -> {
+            lower.contains("ഒഴിവാക്കുക") || lower.contains("delete") || lower.contains("remove") || lower.contains("ozhivakkuka") || lower.contains("ozhivakkua") || lower.contains("ozhivakua") -> {
                 if (userRole == "ADMIN") {
                     currentMode = "delete_lang"
                     speak("പുസ്തകം മലയാളമാണോ? അതെ അല്ലെങ്കിൽ അല്ല എന്ന് പറയുക", "delete_lang_prompt")
                 } else speak("അഡ്മിന് മാത്രമേ ഇത് സാധിക്കൂ.")
             }
-            lower.contains("ചേർക്കുക") || lower.contains("add") || lower.contains("insert") -> {
+            lower.contains("ചേർക്കുക") || lower.contains("add") || lower.contains("insert") || lower.contains("cherkuka") || lower.contains("cherkka") || lower.contains("cherkkuka") || lower.contains("cherkkukka") -> {
                 if (userRole == "ADMIN") {
                     currentMode = "add_lang"
                     speak("ഏത് ഭാഷയാണ്? മലയാളം, ഇംഗ്ലീഷ്, അല്ലെങ്കിൽ മറ്റുള്ളവ?", "add_lang_prompt")
                 } else speak("അഡ്മിന് മാത്രമേ ഇത് സാധിക്കൂ.")
             }
-            lower.contains("എണ്ണം") || lower.contains("stats") || lower.contains("count") || lower.contains("വിവരം") || lower.contains("status") || lower.contains("സ്റ്റാറ്റസ്") -> speakStats()
-            lower.contains("വായ്പ") || lower.contains("borrow") || lower.contains("lend") -> speak("ലിസ്റ്റിലെ റിക്വസ്റ്റ് ബട്ടൺ അമർത്തുക.")
+            lower.contains("എണ്ണം") || lower.contains("stats") || lower.contains("count") || lower.contains("status") || lower.contains("സ്റ്റാറ്റസ്") || lower.contains("ennam") -> speakStats()
+            lower.contains("വായ്പ") || lower.contains("borrow") || lower.contains("lend") || lower.contains("vaypa") -> speak("ലിസ്റ്റിലെ റിക്വസ്റ്റ് ബട്ടൺ അമർത്തുക.")
             lower.contains("തിരിച്ചു") || lower.contains("return") || lower.contains("thirichu") -> speak("ലിസ്റ്റിലെ റിട്ടേൺ ബട്ടൺ അമർത്തുക.")
             
             else -> {
@@ -1748,6 +2010,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun speak(text: String, id: String = "general") {
+        if (!::tts.isInitialized) {
+            Log.e("MainActivity", "TTS not initialized yet")
+            return
+        }
         val params = Bundle()
         params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, id)
         tts.speak(text, TextToSpeech.QUEUE_FLUSH, params, id)
@@ -1768,9 +2034,20 @@ class MainActivity : ComponentActivity() {
                 currentMode = "add_cat"
                 speak("വിഭാഗം പറയാൻ വിട്ടുപോയി. നോവൽ, ചെറുകഥകൾ, ആത്മകഥ, പ്രബന്ധങ്ങൾ, ചിന്തകൾ, അല്ലെങ്കിൽ ബാലസാഹിത്യം?", "add_cat_prompt")
             }
-            voiceAddLocation.isBlank() -> {
-                currentMode = "add_loc"
-                speak("റാക്ക് നമ്പർ പറയാൻ വിട്ടുപോയി. അത് പറയൂ.", "add_loc_prompt")
+            voiceAddAccList.any { it.isBlank() } -> {
+                voiceAddCurrentAccIndex = voiceAddAccList.indexOfFirst { it.isBlank() }
+                currentMode = "add_acc_multi"
+                speak("${voiceAddCurrentAccIndex + 1}-ാമത്തെ പുസ്തകത്തിന്റെ അക്സെഷൻ നമ്പർ പറയാൻ വിട്ടുപോയി. അത് പറയൂ.", "add_acc_multi_prompt")
+            }
+            voiceAddIsbnList.any { it.isBlank() } -> {
+                voiceAddCurrentAccIndex = voiceAddIsbnList.indexOfFirst { it.isBlank() }
+                currentMode = "add_isbn_multi"
+                speak("ISBN നമ്പർ പറയാൻ വിട്ടുപോയി. അത് പറയൂ.", "add_isbn_multi_prompt")
+            }
+            voiceAddLocList.any { it.isBlank() } -> {
+                voiceAddCurrentAccIndex = voiceAddLocList.indexOfFirst { it.isBlank() }
+                currentMode = "add_loc_multi"
+                speak("റാക്ക് നമ്പർ പറയാൻ വിട്ടുപോയി. അത് പറയൂ.", "add_loc_multi_prompt")
             }
             else -> {
                 saveFullBook()
@@ -1781,12 +2058,9 @@ class MainActivity : ComponentActivity() {
     private fun launchSpeechRecognizer() {
         showVoiceDialog = true
         
-        // Use Malayalam recognizer if the user chose Malayalam language for the book,
-        // unless it's a field that specifically requires English (like ISBN) AND they are NOT in Malayalam mode.
-        // Actually, for Malayalam speakers, it's better to stay in ml-IN and transliterate.
-        
         val lang = when {
-            currentMode == "add_isbn" || currentMode == "add_price" || currentMode == "add_copies" -> "en-US"
+            currentMode == "add_isbn_multi" || currentMode == "add_price_multi" || 
+            currentMode == "add_acc_multi" || currentMode == "add_loc_multi" -> "en-US"
             isMalayalamBook -> "ml-IN"
             else -> if (currentMode == "add_lang") "ml-IN" else "en-US"
         }
@@ -1794,8 +2068,9 @@ class MainActivity : ComponentActivity() {
         Log.d("VoiceInput", "Launching Recognizer: lang=$lang, mode=$currentMode")
         statusText = "Listening ($lang)..."
 
-        speechRecognizer?.destroy()
-        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
+        if (speechRecognizer == null) {
+            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
+        }
         
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
@@ -1846,7 +2121,10 @@ class MainActivity : ComponentActivity() {
         if (voiceAddTitle.isBlank()) missingFields.add("Title")
         if (voiceAddAuthor.isBlank()) missingFields.add("Author")
         if (voiceAddCategory.isBlank()) missingFields.add("Category")
-        if (voiceAddLocation.isBlank()) missingFields.add("Location")
+        if (voiceAddAccList.any { it.isBlank() }) missingFields.add("Stock Numbers")
+        if (voiceAddIsbnList.any { it.isBlank() }) missingFields.add("ISBN Numbers")
+        if (voiceAddLocList.any { it.isBlank() }) missingFields.add("Rack Locations")
+        // Price is optional for voice input now
 
         if (missingFields.isNotEmpty()) {
             val missingStr = missingFields.joinToString(", ")
@@ -1865,46 +2143,57 @@ class MainActivity : ComponentActivity() {
         val language = voiceAddLanguage
         val isMal = language == "Malayalam"
         
-        // Title, Author, Publisher: Malayalam if language is Malayalam, else English
+        // Title, Author: Malayalam if language is Malayalam, else English
         val title = if (isMal) LanguageUtils.correctMalayalam(voiceAddTitle) else LanguageUtils.transliterateToEnglishPreserveSpaces(voiceAddTitle)
         val author = if (isMal) LanguageUtils.correctMalayalam(voiceAddAuthor) else LanguageUtils.transliterateToEnglishPreserveSpaces(voiceAddAuthor)
-        val publisher = if (isMal) LanguageUtils.correctMalayalam(voiceAddPublisher) else LanguageUtils.transliterateToEnglishPreserveSpaces(voiceAddPublisher)
         
         val category = voiceAddCategory
-        val location = LanguageUtils.transliterateToEnglish(voiceAddLocation)
-        val isbn = LanguageUtils.transliterateToEnglish(voiceAddIsbn)
-        val accession = "" // Auto-incremental
-        val callNumber = LanguageUtils.generateCallNumber(title, author)
-        
+        val publisher = if (isMal) LanguageUtils.correctMalayalam(voiceAddPublisher) else LanguageUtils.transliterateToEnglishPreserveSpaces(voiceAddPublisher)
         val year = voiceAddYear.filter { it.isDigit() }.toIntOrNull()
-        val price = voiceAddPrice.filter { it.isDigit() || it == '.' }.toDoubleOrNull()
         val copies = voiceAddCopies
         val borrowable = isBorrowable
-        val bookType = voiceAddBookType
+
+        // CRITICAL: Capture lists before reset to avoid race conditions in the Firebase listener
+        val accList = voiceAddAccList.toList()
+        val isbnList = voiceAddIsbnList.toList()
+        val locList = voiceAddLocList.toList()
+        val priceList = voiceAddPriceList.toList()
+        val typeList = voiceAddTypeList.toList()
+        val bType = voiceAddBookType
 
         db.collection("users").document(auth.currentUser?.uid ?: "").get().addOnSuccessListener { doc ->
             val phone = doc.getString("phoneNumber") ?: ""
-            val newBook = Book(
-                accessionNumber = accession,
-                isbn = if(isbn.isBlank()) null else isbn,
-                callNumber = if(callNumber.isBlank()) null else callNumber,
-                title = title, 
-                author = author, 
-                category = category, 
-                publisherName = if(publisher.isBlank()) null else publisher,
-                yearOfPublication = year,
-                location = location, 
-                price = price,
-                numberOfCopies = copies,
-                canBeBorrowed = borrowable,
-                adminPhoneNumber = phone, 
-                status = "Available", 
-                libraryId = libraryId,
-                language = language,
-                bookType = bookType
-            )
+            
+            val booksToSave = accList.mapIndexed { index, acc ->
+                val isbn = isbnList.getOrNull(index) ?: ""
+                val location = locList.getOrNull(index) ?: ""
+                val priceStr = priceList.getOrNull(index) ?: ""
+                // Use voiceAddBookType as general type, or fallback to per-copy type
+                val bookType = if (bType != "Normal") bType else (typeList.getOrNull(index) ?: "Normal")
+
+                Book(
+                    accessionNumber = acc,
+                    isbn = if(isbn.isBlank()) null else isbn,
+                    callNumber = LanguageUtils.generateCallNumber(title, author),
+                    title = title, 
+                    author = author, 
+                    category = category, 
+                    publisherName = if(publisher.isBlank()) null else publisher,
+                    yearOfPublication = year,
+                    location = location, 
+                    price = priceStr.filter { it.isDigit() }.toIntOrNull(),
+                    numberOfCopies = 1,
+                    canBeBorrowed = borrowable,
+                    adminPhoneNumber = phone, 
+                    status = "Available", 
+                    libraryId = libraryId,
+                    language = language,
+                    bookType = bookType
+                )
+            }
+            
             lifecycleScope.launch {
-                saveBookToFirestore(newBook)
+                saveMultipleBooksToFirestore(booksToSave)
             }
         }
         currentMode = ""
@@ -1912,12 +2201,45 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun resetVoiceFields() {
-        voiceAddTitle = ""; voiceAddAuthor = ""; voiceAddCategory = ""; voiceAddLocation = ""
-        voiceAddIsbn = ""; voiceAddAccession = ""; voiceAddCallNumber = ""; voiceAddPublisher = ""; voiceAddYear = ""; voiceAddPrice = ""
-        voiceAddCopies = 1
+        voiceAddTitle = ""; voiceAddAuthor = ""; voiceAddCategory = ""
+        voiceAddPublisher = ""; voiceAddYear = ""; voiceAddCopies = 1
+        voiceAddCurrentAccIndex = 0
+        voiceAddAccList = mutableListOf(); voiceAddIsbnList = mutableListOf()
+        voiceAddLocList = mutableListOf(); voiceAddPriceList = mutableListOf()
+        voiceAddTypeList = mutableListOf()
+        voiceAddBookType = "Normal"
+    }
+
+    private fun resetAddBookState() {
+        abIsMalayalam = true
+        abIsbn = ""
+        abAccessionNumber = ""
+        abAccessionNumbers = listOf("")
+        abIsbns = listOf("")
+        abLocations = listOf("")
+        abPrices = listOf("")
+        abBookTypes = listOf("Normal")
+        abTitle = ""
+        abAuthor = ""
+        abCategory = ""
+        abPublisherName = ""
+        abYearOfPublication = ""
+        abCallNumber = ""
+        abIsCallNumberAuto = true
+        abLocation = ""
+        abPrice = ""
+        abBookType = "Normal"
+        abLanguage = "Malayalam"
+        abNumberOfCopies = "1"
+        abUnavailabilityReason = ""
     }
 
     private fun startVoiceDictation(callback: (String) -> Unit) {
+        if (androidx.core.content.ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            pendingVoiceAction = { startVoiceDictation(callback) }
+            audioPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+            return
+        }
         onVoiceResult = callback
         currentMode = "dictation"
         speak(if (isMalayalamBook) "ശ്രദ്ധിക്കുന്നു..." else "Listening...", "dictation_prompt")
@@ -1998,7 +2320,7 @@ class MainActivity : ComponentActivity() {
                             val request = BorrowRequest(
                                 accessionNumber = book.accessionNumber,
                                 title = book.title,
-                                copyNumber = copyNumber.substringAfter("-C").toIntOrNull() ?: 0,
+                                copyNumber = 0, // Not used in unique-doc model
                                 libraryId = libraryId,
                                 userName = userName,
                                 userUid = userUid,
@@ -2015,48 +2337,121 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun approveBorrowRequest(request: BorrowRequest) {
+        if (request.bookId.isBlank()) {
+            showToast("Invalid Book ID in request")
+            return
+        }
+        
         db.runTransaction { transaction ->
             val bookRef = db.collection("books").document(request.bookId)
-            val book = transaction.get(bookRef).toObject(Book::class.java) ?: return@runTransaction
+            val doc = transaction.get(bookRef)
+            if (!doc.exists()) return@runTransaction "BOOK_NOT_FOUND"
             
-            val updatedCopies = book.copies.map { copy ->
-                val requestCopyFullId = "${request.accessionNumber}-C${request.copyNumber}"
-                if (copy.copyNumber == requestCopyFullId) {
-                    copy.copy(
+            val data = doc.data ?: return@runTransaction "BOOK_NOT_FOUND"
+            
+            // Manual Deserialization for Transaction Safety
+            val accessionNumber = data["accession_number"]?.toString() ?: data["accessionNumber"]?.toString() ?: ""
+            val numCopies = (data["number_of_copies"] as? Number)?.toInt() ?: (data["numberOfCopies"] as? Number)?.toInt() ?: 1
+            
+            // Critical: Get the actual 'copies' list from Firestore data
+            val copiesData = data["copies"] as? List<Map<String, Any>>
+            var copiesList = copiesData?.map { c ->
+                BookCopy(
+                    accessionNumber = c["accession_number"] as? String ?: c["accessionNumber"] as? String ?: "",
+                    copyNumber = c["copyNumber"] as? String ?: c["copy_number"] as? String ?: "",
+                    status = c["status"] as? String ?: "Available",
+                    borrowerId = c["borrower_id"] as? String ?: c["borrowerId"] as? String,
+                    borrowerName = c["borrowerName"] as? String ?: c["borrowername"] as? String,
+                    dueDate = (c["dueDate"] as? Number)?.toLong() ?: (c["due_date"] as? Number)?.toLong()
+                )
+            } ?: emptyList()
+
+            if (copiesList.isEmpty() && numCopies > 0) {
+                val docStatus = data["status"]?.toString() ?: "Available"
+                copiesList = (1..numCopies).map { i ->
+                    BookCopy(
+                        accessionNumber = if (numCopies == 1) accessionNumber else "$accessionNumber-C$i",
+                        copyNumber = if (numCopies == 1) accessionNumber else "$accessionNumber-C$i",
+                        status = docStatus
+                    )
+                }
+            }
+
+            // Find first available copy
+            val availableCopy = copiesList.find { it.status == "Available" }
+            if (availableCopy == null) {
+                return@runTransaction "NO_COPIES"
+            }
+            
+            val dueDate = System.currentTimeMillis() + (20L * 24 * 60 * 60 * 1000)
+            
+            // Update the specific copy in the list
+            val updatedCopies = copiesList.map { 
+                if (it.copyNumber == availableCopy.copyNumber) {
+                    it.copy(
                         status = "Borrowed",
                         borrowerId = request.userUid,
-                        borrowerName = request.userName
+                        borrowerName = request.userName,
+                        dueDate = dueDate
                     )
-                } else copy
+                } else it
             }
             
             val availableCount = updatedCopies.count { it.status == "Available" }
-            val borrowedCount = updatedCopies.count { it.status == "Borrowed" }
-            val aggregateStatus = when {
+            val borrowCount = updatedCopies.count { it.status == "Borrowed" }
+            val finalStatus = when {
                 availableCount > 0 -> "Available"
-                borrowedCount > 0 -> "Borrowed"
+                borrowCount > 0 -> "Borrowed"
                 else -> "Unavailable"
             }
-
+            
             transaction.update(bookRef, 
-                "copies", updatedCopies,
-                "status", aggregateStatus
+                "status", finalStatus,
+                "copies", updatedCopies
             )
             
-            val dueDate = System.currentTimeMillis() + (20L * 24 * 60 * 60 * 1000)
             transaction.update(db.collection("borrow_requests").document(request.id), 
                 "status", "APPROVED",
                 "due_date", dueDate,
                 "approval_date", System.currentTimeMillis()
             )
-        }.addOnSuccessListener {
-            showToast("Request Approved!")
-            // Check for other pending requests for this specific copy document?
-            // Actually, with multiple copies, only the specific copy is locked.
-            // But if it was the last copy, we might want to reject others or just leave them.
-            // Let's keep it simple and just approve this one.
-        }.addOnFailureListener {
-            showToast("Failed to approve request")
+            
+            // If this was the last copy, we'll return a special status to trigger auto-rejection
+            if (availableCount == 0) "SUCCESS_LAST_COPY" else "SUCCESS"
+        }.addOnSuccessListener { result ->
+            when (result) {
+                "SUCCESS", "SUCCESS_LAST_COPY" -> {
+                    showToast("Request Approved!")
+                    speak("${request.userName}-ന്റെ അപേക്ഷ സ്വീകരിച്ചു.")
+                    
+                    if (result == "SUCCESS_LAST_COPY") {
+                        // Auto-reject other pending requests for this book
+                        db.collection("borrow_requests")
+                            .whereEqualTo("bookId", request.bookId)
+                            .whereEqualTo("status", "PENDING")
+                            .get()
+                            .addOnSuccessListener { snapshot ->
+                                val batch = db.batch()
+                                snapshot.documents.forEach { doc ->
+                                    if (doc.id != request.id) {
+                                        batch.update(doc.reference, "status", "REJECTED")
+                                    }
+                                }
+                                batch.commit()
+                            }
+                    }
+                }
+                "NO_COPIES" -> {
+                    showToast("No available copies to lend")
+                    speak("വായ്പ നൽകാൻ പുസ്തകം ലഭ്യമല്ല.")
+                }
+                else -> {
+                    showToast("Failed to approve: Book not found")
+                }
+            }
+        }.addOnFailureListener { e ->
+            Log.e("MainActivity", "Approval Transaction Failed", e)
+            showToast("Failed to approve request: ${e.message}")
         }
     }
 
@@ -2066,10 +2461,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun returnBook(book: Book, copyNumber: String) {
-        // Find the active approved request for this user and book copy
+        // Find the borrower info. It could be in the copies list or (if unique doc model) 
+        // we might just look for the first borrowed copy in this document.
+        val borrowedCopy = book.copies.find { it.status == "Borrowed" }
+            ?: book.copies.firstOrNull() // Fallback
+            
+        val borrowerId = borrowedCopy?.borrowerId ?: return
+        val targetCopyNumber = borrowedCopy.copyNumber
+
         db.collection("borrow_requests")
             .whereEqualTo("bookId", book.id)
-            .whereEqualTo("copy_number", copyNumber.substringAfter("-C").toIntOrNull() ?: 0)
+            .whereEqualTo("userUid", borrowerId)
             .whereEqualTo("status", "APPROVED")
             .get()
             .addOnSuccessListener { snapshot ->
@@ -2077,34 +2479,36 @@ class MainActivity : ComponentActivity() {
                 
                 db.runTransaction { transaction ->
                     val bookRef = db.collection("books").document(book.id)
-                    val freshBook = transaction.get(bookRef).toObject(Book::class.java)!!
+                    val currentBook = transaction.get(bookRef).toObject(Book::class.java) ?: return@runTransaction
                     
-                    val updatedCopies = freshBook.copies.map { copy ->
-                        if (copy.copyNumber == copyNumber) {
-                            copy.copy(status = "Available", borrowerId = null, borrowerName = null)
-                        } else copy
+                    // Update the specific copy to Available
+                    val updatedCopies = currentBook.copies.map { 
+                        if (it.copyNumber == targetCopyNumber || currentBook.numberOfCopies == 1) {
+                            it.copy(
+                                status = "Available",
+                                borrowerId = null,
+                                borrowerName = null,
+                                dueDate = null
+                            )
+                        } else it
                     }
                     
-                    val availCount = updatedCopies.count { it.status == "Available" }
-                    val borrowCount = updatedCopies.count { it.status == "Borrowed" }
-                    val finalStatus = when {
-                        availCount > 0 -> "Available"
-                        borrowCount > 0 -> "Borrowed"
-                        else -> "Unavailable"
-                    }
+                    val availableCount = updatedCopies.count { it.status == "Available" }
+                    val finalStatus = if (availableCount > 0) "Available" else "Borrowed"
 
                     transaction.update(bookRef, 
                         "status", finalStatus,
                         "copies", updatedCopies
                     )
                     
-                    // Mark request as RETURNED instead of deleting
+                    // Mark request as RETURNED
                     transaction.update(requestDoc.reference, 
                         "status", "RETURNED",
                         "return_date", System.currentTimeMillis()
                     )
                 }.addOnSuccessListener { 
                     speak("${book.title} തിരിച്ചേൽപ്പിച്ചു.") 
+                    showToast("Return accepted")
                 }
             }
     }
@@ -2171,6 +2575,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun deleteBookWithUndo(book: Book) {
+        if (book.copies.any { it.status == "Borrowed" }) {
+            showToast("Cannot delete: Some copies are currently lent out.")
+            speak("ഈ പുസ്തകം ആരുടെയോ കയ്യിലാണ്. അതിനാൽ ഒഴിവാക്കാൻ കഴിയില്ല.")
+            return
+        }
         lastDeletedBook = book
         db.collection("books").document(book.id).delete().addOnSuccessListener {
             speak("${book.title} ഒഴിവാക്കി.")
@@ -2222,8 +2631,16 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun deleteBook(id: String) { 
-        db.collection("books").document(id).delete().addOnSuccessListener {
-            speak("പുസ്തകം ഒഴിവാക്കി.")
+        db.collection("books").document(id).get().addOnSuccessListener { doc ->
+            val book = doc.toObject(Book::class.java)
+            if (book != null && book.copies.any { it.status == "Borrowed" }) {
+                showToast("Cannot delete: Some copies are currently lent out.")
+                speak("ഈ പുസ്തകം ആരുടെയോ കയ്യിലാണ്. അതിനാൽ ഒഴിവാക്കാൻ കഴിയില്ല.")
+            } else {
+                db.collection("books").document(id).delete().addOnSuccessListener {
+                    speak("പുസ്തകം ഒഴിവാക്കി.")
+                }
+            }
         }
     }
 
@@ -2329,128 +2746,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private suspend fun saveBookToFirestore(book: Book) { 
-        // Strict validation: Don't save if mandatory fields are missing
-        if (book.title.isBlank() || book.author.isBlank() || (book.category.isBlank() && currentScanType != ScanType.REGISTER) || book.location.isBlank()) {
-            // Note: During Register scan, Category/Location might be empty initially
-            if (currentScanType != ScanType.REGISTER) {
-                withContext(Dispatchers.Main) { showToast("Cannot save: Missing mandatory details.") }
-                return
-            }
-        }
-
-        // Validate number of copies: Must be at least 0
-        if (book.numberOfCopies < 0) {
-            withContext(Dispatchers.Main) { showToast("Cannot save: Book copies cannot be negative.") }
-            return
-        }
-
-        val cleanTitle = book.title.trim()
-        val cleanAuthor = book.author.trim()
-
-        try {
-            // 1. Check for duplicates (Same Title and Same Author in this Library)
-            val duplicateSnapshot = db.collection("books")
-                .whereEqualTo("library_id", libraryId)
-                .whereEqualTo("title", cleanTitle)
-                .whereEqualTo("author", cleanAuthor)
-                .get().await()
-
-            if (!duplicateSnapshot.isEmpty) {
-                // DUPLICATE FOUND: Update existing book instead of adding new one
-                val existingDoc = duplicateSnapshot.documents.first()
-                val existingBook = existingDoc.toObject(Book::class.java)!!
-                
-                val newTotalCopies = existingBook.numberOfCopies + book.numberOfCopies
-                val startCopyIndex = existingBook.numberOfCopies + 1
-                
-                val newCopiesList = existingBook.copies.toMutableList()
-                for (i in 0 until book.numberOfCopies) {
-                    val index = startCopyIndex + i
-                    newCopiesList.add(BookCopy(copyNumber = "${existingBook.accessionNumber}-C$index"))
-                }
-
-                db.collection("books").document(existingDoc.id).update(
-                    "number_of_copies", newTotalCopies,
-                    "copies", newCopiesList,
-                    "status", "Available"
-                ).await()
-                
-                withContext(Dispatchers.Main) {
-                    showToast("Updated existing book with ${book.numberOfCopies} more copies.")
-                    speak("ഈ പുസ്തകം നിലവിലുണ്ട്. പുതിയ ${book.numberOfCopies} കോപ്പികൾ കൂടി ചേർത്തു.")
-                }
-            } else {
-                // NO DUPLICATE: Proceed with normal addition
-                proceedWithNewBookAddition(book.copy(title = cleanTitle, author = cleanAuthor))
-            }
-        } catch (e: Exception) {
-            Log.e("MainActivity", "Save error", e)
-            withContext(Dispatchers.Main) { showToast("Error saving book.") }
-        }
-    }
-
-    private suspend fun proceedWithNewBookAddition(bookToSave: Book) {
-        // Force the correct libraryId
-        val finalBookData = bookToSave.copy(libraryId = libraryId)
-
-        // If accessionNumber is empty, generate it
-        if (finalBookData.accessionNumber.isBlank()) {
-            val snapshot = db.collection("books")
-                .whereEqualTo("library_id", libraryId)
-                .get().await()
-            
-            var maxNum = 0
-            snapshot.documents.forEach { doc ->
-                val acc = doc.getString("accession_number") ?: doc.getString("accessionNumber") ?: ""
-                val num = acc.filter { it.isDigit() }.toIntOrNull() ?: 0
-                if (num > maxNum) maxNum = num
-            }
-            val nextNum = maxNum + 1
-            val nextAccession = "$nextNum"
-            
-            val generatedCopies = (1..finalBookData.numberOfCopies).map { i ->
-                BookCopy(copyNumber = "$nextAccession-C$i")
-            }
-            
-            val finalBook = finalBookData.copy(
-                accessionNumber = nextAccession
-            ).apply {
-                copies = generatedCopies
-            }
-
-            val docRef = db.collection("books").add(finalBook).await()
-            docRef.update("id", docRef.id).await()
-            withContext(Dispatchers.Main) {
-                speak("പുസ്തകം വിജയകരമായി ചേർത്തു. ഇതിന്റെ ${finalBookData.numberOfCopies} കോപ്പികൾ ലഭ്യമാണ്.")
-            }
-        } else {
-            // Check if this specific accession already exists
-            val snapshot = db.collection("books")
-                .whereEqualTo("library_id", libraryId)
-                .whereEqualTo("accession_number", finalBookData.accessionNumber)
-                .get().await()
-
-            if (snapshot.isEmpty) {
-                val generatedCopies = (1..finalBookData.numberOfCopies).map { i ->
-                    BookCopy(copyNumber = "${finalBookData.accessionNumber}-C$i")
-                }
-                val finalBook = finalBookData.copy().apply { copies = generatedCopies }
-                
-                val docRef = db.collection("books").add(finalBook).await()
-                docRef.update("id", docRef.id).await()
-                withContext(Dispatchers.Main) {
-                    speak("പുസ്തകം വിജയകരമായി ചേർത്തു. ഇതിന്റെ ${finalBookData.numberOfCopies} കോപ്പികൾ ലഭ്യമാണ്.")
-                }
-            } else {
-                withContext(Dispatchers.Main) {
-                    showToast("Accession Number ${finalBookData.accessionNumber} already exists!")
-                    speak("ഈ അക്സെഷൻ നമ്പർ നിലവിലുണ്ട്.")
-                }
-            }
-        }
-    }
-
     private fun updateBookInFirestore(book: Book) {
         db.collection("books").document(book.id).set(book)
             .addOnSuccessListener {
@@ -2460,34 +2755,48 @@ class MainActivity : ComponentActivity() {
             .addOnFailureListener { showToast("Update failed") }
     }
 
-    private fun refreshRecommendations() {
-        if (userRole != "USER") return
-        val myUid = auth.currentUser?.uid ?: return
+    private suspend fun saveMultipleBooksToFirestore(books: List<Book>) {
+        if (books.isEmpty()) return
         
-        // 1. Get history of borrowed books for this user
-        db.collection("borrow_requests")
-            .whereEqualTo("userUid", myUid)
-            .whereIn("status", listOf("APPROVED", "RETURNED"))
-            .get()
-            .addOnSuccessListener { snapshot ->
-                val borrowedBookTitles = snapshot.documents.map { it.getString("title") ?: it.getString("bookTitle") ?: "" }.distinct()
+        statusText = "Saving books..."
+        
+        try {
+            val batch = db.batch()
+            
+            for (book in books) {
+                // Check uniqueness of Stock Number globally
+                val snapshot = db.collection("books")
+                    .whereEqualTo("library_id", libraryId)
+                    .whereEqualTo("accession_number", book.accessionNumber)
+                    .get().await()
                 
-                // 2. Extract preferences (Categories and Moods)
-                val myBorrowedBooks = allBooks.filter { b -> borrowedBookTitles.contains(b.title) }
-                val preferredCategories = myBorrowedBooks.map { it.category }.groupingBy { it }.eachCount()
-
-                // 3. Filter library for recommendations
-                val suggestions = allBooks.filter { book ->
-                    // Must be available and NOT already read by user
-                    book.status == "Available" && !borrowedBookTitles.contains(book.title)
-                }.sortedByDescending { book ->
-                    // Simple score: Category frequency
-                    val catScore = preferredCategories[book.category] ?: 0
-                    catScore
-                }.take(5)
-
-                recommendedBooks = suggestions
+                if (!snapshot.isEmpty) {
+                    withContext(Dispatchers.Main) {
+                        showToast("Book with Stock Number ${book.accessionNumber} already exists!")
+                        speak("ഈ സ്റ്റോക്ക് നമ്പർ നിലവിലുണ്ട്.")
+                    }
+                    statusText = "Save failed: Duplicate Stock Number"
+                    return
+                }
+                
+                val docRef = db.collection("books").document()
+                val finalBook = book.copy(id = docRef.id)
+                batch.set(docRef, finalBook)
             }
+            
+            batch.commit().await()
+            
+            withContext(Dispatchers.Main) {
+                showToast("Saved ${books.size} items to library.")
+                speak("പുസ്തകങ്ങൾ വിജയകരമായി ചേർത്തു.")
+                statusText = "Ready"
+                resetAddBookState()
+            }
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Save error", e)
+            withContext(Dispatchers.Main) { showToast("Error saving books.") }
+            statusText = "Error saving books"
+        }
     }
 
     private fun readBookDetails(query: String) {
@@ -2890,7 +3199,7 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    fun EditBookDialog(book: Book, onDismiss: () -> Unit, onVoiceInput: (Boolean, (String) -> Unit) -> Unit = { _, _ -> }, onSave: (Book) -> Unit) {
+    fun EditBookDialog(book: Book, groupTotal: Int, onDismiss: () -> Unit, onVoiceInput: (Boolean, (String) -> Unit) -> Unit = { _, _ -> }, onSave: (Book) -> Unit, onSaveMulti: (List<Book>) -> Unit) {
         var isMalayalam by remember { mutableStateOf(true) }
         var isbn by remember { mutableStateOf(book.isbn ?: "") }
         var accessionNumber by remember { mutableStateOf(book.accessionNumber) }
@@ -2900,20 +3209,27 @@ class MainActivity : ComponentActivity() {
         var publisherName by remember { mutableStateOf(book.publisherName ?: "") }
         var yearOfPublication by remember { mutableStateOf(book.yearOfPublication?.toString() ?: "") }
         var callNumber by remember { mutableStateOf(book.callNumber ?: "") }
+        var isCallNumberAuto by remember { mutableStateOf(book.callNumber.isNullOrBlank()) }
         var location by remember { mutableStateOf(book.location) }
         var price by remember { mutableStateOf(book.price?.toString() ?: "") }
         var language by remember { mutableStateOf(book.language) }
         var bookType by remember { mutableStateOf(book.bookType) }
         var canBeBorrowed by remember { mutableStateOf(book.canBeBorrowed) }
-        var numberOfCopies by remember { mutableStateOf(book.numberOfCopies.toString()) }
+        var numberOfCopies by remember { mutableStateOf(groupTotal.toString()) }
         var unavailabilityReason by remember { mutableStateOf(book.unavailabilityReason ?: "") }
+
+        // State for adding multiple copies during edit
+        var extraAccessionNumbers by remember { mutableStateOf(listOf<String>()) }
+        var extraIsbns by remember { mutableStateOf(listOf<String>()) }
+        var extraLocations by remember { mutableStateOf(listOf<String>()) }
+        var extraPrices by remember { mutableStateOf(listOf<String>()) }
+        var extraBookTypes by remember { mutableStateOf(listOf<String>()) }
 
         // Auto-suggest Call Number on edit if Title/Author changes
         LaunchedEffect(title, author) {
-            val suggested = LanguageUtils.generateCallNumber(title, author)
-            if (suggested.isNotEmpty()) {
-                // Only auto-update if it was empty or matching a standard pattern
-                if (callNumber.isBlank()) {
+            if (isCallNumberAuto) {
+                val suggested = LanguageUtils.generateCallNumber(title, author)
+                if (suggested.isNotEmpty()) {
                     callNumber = suggested
                 }
             }
@@ -2922,10 +3238,21 @@ class MainActivity : ComponentActivity() {
         val mainColor = if (isDarkMode) Color(0xFFD7CCC8) else Color(0xFF452719)
         val cardBg = if (isDarkMode) Color(0xFF1E1916) else Color.White
         val borderColor = if (isDarkMode) Color.Gray.copy(alpha = 0.5f) else Color(0xFFD7CCC8)
+        val surfaceBeige = if (isDarkMode) Color(0xFF2D2420) else Color(0xFFF3EAE2)
 
-        Dialog(onDismissRequest = onDismiss) {
+        Dialog(
+            onDismissRequest = onDismiss,
+            properties = androidx.compose.ui.window.DialogProperties(
+                dismissOnBackPress = true, 
+                dismissOnClickOutside = false,
+                usePlatformDefaultWidth = false
+            )
+        ) {
             Card(
-                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.95f)
+                    .padding(16.dp),
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = cardBg)
             ) {
@@ -2951,7 +3278,7 @@ class MainActivity : ComponentActivity() {
                     OutlinedTextField(
                         value = accessionNumber,
                         onValueChange = { accessionNumber = it },
-                        label = { Text("Accession Number") },
+                        label = { Text("Stock Number") },
                         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = mainColor,
@@ -3087,7 +3414,19 @@ class MainActivity : ComponentActivity() {
 
                     EditVoiceInputField(value = publisherName, onValueChange = { publisherName = it }, label = "Publisher", onVoiceInput = { onVoiceInput(isMalayalam, it) }, borderColor = borderColor)
                     EditVoiceInputField(value = yearOfPublication, onValueChange = { if (it.all { char -> char.isDigit() }) yearOfPublication = it }, label = "Year of Publication", onVoiceInput = { onVoiceInput(false, it) }, borderColor = borderColor)
-                    EditVoiceInputField(value = callNumber, onValueChange = { callNumber = it }, label = "Call Number", onVoiceInput = { onVoiceInput(false, it) }, borderColor = borderColor)
+                    EditVoiceInputField(
+                        value = callNumber, 
+                        onValueChange = { 
+                            callNumber = it
+                            isCallNumberAuto = false 
+                        }, 
+                        label = "Call Number", 
+                        onVoiceInput = { onVoiceInput(false, {
+                            callNumber = it
+                            isCallNumberAuto = false
+                        }) }, 
+                        borderColor = borderColor
+                    )
                     EditVoiceInputField(value = location, onValueChange = { location = it }, label = "Rack Number", onVoiceInput = { onVoiceInput(false, it) }, borderColor = borderColor)
                     EditVoiceInputField(value = price, onValueChange = { if (it.all { char -> char.isDigit() || char == '.' }) price = it }, label = "Price", onVoiceInput = { onVoiceInput(false, it) }, borderColor = borderColor)
 
@@ -3095,7 +3434,278 @@ class MainActivity : ComponentActivity() {
                         value = numberOfCopies,
                         onValueChange = { 
                             if (it.all { char -> char.isDigit() }) {
-                                numberOfCopies = it 
+                                val newCount = it.toIntOrNull() ?: groupTotal
+                                if (newCount < groupTotal && newCount != 0) {
+                                    showToast("To reduce copies, please use the Delete option in the library list.")
+                                } else {
+                                    numberOfCopies = it 
+                                    if (newCount > groupTotal) {
+                                        val needed = newCount - groupTotal
+                                        extraAccessionNumbers = (1..needed).map { "" }
+                                        extraIsbns = (1..needed).map { isbn }
+                                        extraLocations = (1..needed).map { location }
+                                        extraPrices = (1..needed).map { price }
+                                        extraBookTypes = (1..needed).map { bookType }
+                                    } else {
+                                        extraAccessionNumbers = emptyList()
+                                    }
+                                }
+                            }
+                        },
+                        label = { Text("Total Number of Copies") },
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = mainColor,
+                            unfocusedTextColor = mainColor,
+                            focusedBorderColor = mainColor,
+                            unfocusedBorderColor = borderColor,
+                            focusedLabelColor = mainColor,
+                            unfocusedLabelColor = Color.Gray
+                        )
+                    )
+
+                    if (extraAccessionNumbers.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text("Details for New Copies", style = MaterialTheme.typography.titleMedium, color = mainColor, fontWeight = FontWeight.Bold)
+                        
+                        extraAccessionNumbers.forEachIndexed { index, _ ->
+                            Card(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(containerColor = surfaceBeige.copy(alpha = 0.3f)),
+                                border = BorderStroke(0.5.dp, borderColor.copy(alpha = 0.5f))
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp)) {
+                                    Text("New Copy #${index + 1}", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = mainColor)
+                                    Spacer(modifier = Modifier.height(8.dp))
+
+                                    val accVal = extraAccessionNumbers[index]
+                                    val isDup = accVal.isNotBlank() && (allBooks.any { it.accessionNumber == accVal } || (accVal == accessionNumber) || extraAccessionNumbers.filterIndexed { i, s -> i != index && s == accVal }.isNotEmpty())
+
+                                    EditVoiceInputField(
+                                        value = accVal,
+                                        onValueChange = { v ->
+                                            extraAccessionNumbers = extraAccessionNumbers.toMutableList().apply { this[index] = v }
+                                        },
+                                        label = "Stock Number",
+                                        onVoiceInput = { onVoiceInput(false, it) },
+                                        borderColor = borderColor,
+                                        isError = isDup,
+                                        errorText = if (isDup) "Stock Number already exists" else ""
+                                    )
+                                    
+                                    EditVoiceInputField(
+                                        value = extraIsbns[index],
+                                        onValueChange = { v -> extraIsbns = extraIsbns.toMutableList().apply { this[index] = v } },
+                                        label = "ISBN",
+                                        onVoiceInput = { onVoiceInput(false, it) },
+                                        borderColor = borderColor
+                                    )
+
+                                    EditVoiceInputField(
+                                        value = extraLocations[index],
+                                        onValueChange = { v -> extraLocations = extraLocations.toMutableList().apply { this[index] = v } },
+                                        label = "Rack Number",
+                                        onVoiceInput = { onVoiceInput(false, it) },
+                                        borderColor = borderColor
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    if (numberOfCopies.toIntOrNull() == 0) {
+                        EditVoiceInputField(
+                            value = unavailabilityReason,
+                            onValueChange = { unavailabilityReason = it },
+                            label = "Reason for Unavailability (Mandatory)",
+                            onVoiceInput = { onVoiceInput(isMalayalam, it) },
+                            borderColor = Color.Red
+                        )
+                    }
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = if (numberOfCopies.toIntOrNull() == 0) false else canBeBorrowed,
+                            onCheckedChange = { if (numberOfCopies.toIntOrNull() != 0) canBeBorrowed = it },
+                            enabled = numberOfCopies.toIntOrNull() != 0,
+                            colors = CheckboxDefaults.colors(checkedColor = mainColor)
+                        )
+                        Text("Can be borrowed", color = if (numberOfCopies.toIntOrNull() == 0) Color.Gray else mainColor)
+                    }
+
+                    Spacer(modifier = Modifier.height(24.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        TextButton(onClick = onDismiss) { Text("Cancel", color = if (isDarkMode) Color.LightGray else Color.Gray) }
+                        Button(
+                            onClick = {
+                                val newCount = numberOfCopies.toIntOrNull() ?: groupTotal
+                                
+                                if (newCount == 0 && unavailabilityReason.isBlank()) {
+                                    showToast("Please provide a reason for unavailability")
+                                    return@Button
+                                }
+
+                                if (newCount < groupTotal && newCount != 0) {
+                                    showToast("To reduce copies, please use the Delete option in the library list.")
+                                    return@Button
+                                }
+
+                                if (extraAccessionNumbers.any { it.isBlank() }) {
+                                    showToast("Please fill all new Stock Numbers")
+                                    return@Button
+                                }
+
+                                val isMal = language == "Malayalam"
+                                val finalTitle = if (isMal) LanguageUtils.correctMalayalam(title.trim()) else LanguageUtils.transliterateToEnglishPreserveSpaces(title)
+                                val finalAuthor = if (isMal) LanguageUtils.correctMalayalam(author.trim()) else LanguageUtils.transliterateToEnglishPreserveSpaces(author)
+                                
+                                // Update existing book
+                                val updatedBook = book.copy(
+                                    accessionNumber = accessionNumber,
+                                    isbn = if(isbn.isBlank()) null else isbn,
+                                    title = finalTitle, author = finalAuthor, category = category, 
+                                    publisherName = if(publisherName.isBlank()) null else publisherName,
+                                    yearOfPublication = yearOfPublication.toIntOrNull(),
+                                    callNumber = if(callNumber.isBlank()) null else callNumber,
+                                    location = location,
+                                    price = price.toIntOrNull()?.let { it },
+                                    canBeBorrowed = if (newCount == 0) false else canBeBorrowed,
+                                    numberOfCopies = 1, // Single doc model
+                                    status = if (newCount == 0) "Unavailable: $unavailabilityReason" else book.status,
+                                    language = language,
+                                    bookType = bookType,
+                                    unavailabilityReason = if (newCount == 0) unavailabilityReason else null
+                                )
+
+                                onSave(updatedBook)
+
+                                // Add new copies as separate books
+                                if (extraAccessionNumbers.isNotEmpty()) {
+                                    val newBooks = extraAccessionNumbers.mapIndexed { index, acc ->
+                                        Book(
+                                            accessionNumber = acc,
+                                            isbn = if(extraIsbns[index].isBlank()) null else extraIsbns[index],
+                                            title = finalTitle,
+                                            author = finalAuthor,
+                                            category = category,
+                                            publisherName = updatedBook.publisherName,
+                                            yearOfPublication = updatedBook.yearOfPublication,
+                                            callNumber = updatedBook.callNumber,
+                                            location = extraLocations[index],
+                                            price = extraPrices[index].toIntOrNull(),
+                                            numberOfCopies = 1,
+                                            status = "Available",
+                                            canBeBorrowed = true,
+                                            libraryId = libraryId,
+                                            language = language,
+                                            bookType = extraBookTypes[index]
+                                        )
+                                    }
+                                    onSaveMulti(newBooks)
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = mainColor, contentColor = if (isDarkMode) Color(0xFF452719) else Color.White)
+                        ) { Text("Update") }
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    fun AddBookDialog(onDismiss: () -> Unit, onVoiceInput: (Boolean, (String) -> Unit) -> Unit = { _, _ -> }, onSave: (List<Book>) -> Unit) {
+        // Auto-generate Call Number: VAS/M format
+        LaunchedEffect(abTitle, abAuthor) {
+            if (abIsCallNumberAuto && abTitle.isNotBlank() && abAuthor.isNotBlank()) {
+                val suggested = LanguageUtils.generateCallNumber(abTitle, abAuthor)
+                if (suggested.isNotEmpty()) {
+                    abCallNumber = suggested
+                }
+            }
+        }
+
+        val mainColor = if (isDarkMode) Color(0xFFD7CCC8) else Color(0xFF452719)
+        val cardBg = if (isDarkMode) Color(0xFF1E1916) else Color.White
+        val textColor = if (isDarkMode) Color(0xFFE0E0E0) else Color(0xFF1E293B)
+        val surfaceBeige = if (isDarkMode) Color(0xFF2D2420) else Color(0xFFF3EAE2)
+        val borderColor = if (isDarkMode) Color.Gray.copy(alpha = 0.5f) else Color.LightGray
+
+        Dialog(
+            onDismissRequest = onDismiss,
+            properties = androidx.compose.ui.window.DialogProperties(
+                dismissOnBackPress = true, 
+                dismissOnClickOutside = false,
+                usePlatformDefaultWidth = false // Allows us to use full screen width
+            )
+        ) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.95f) // Take up most of the height
+                    .padding(16.dp),
+                shape = RoundedCornerShape(28.dp),
+                colors = CardDefaults.cardColors(containerColor = cardBg)
+            ) {
+                Column(modifier = Modifier.padding(24.dp).verticalScroll(rememberScrollState())) {
+                    Text(
+                        text = "Add New Book",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = textColor
+                    )
+                    Text(
+                        text = "Enter a unique Stock Number for each copy",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (isDarkMode) Color.LightGray else Color(0xFF64748B)
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Voice Language:", style = MaterialTheme.typography.labelMedium, color = textColor)
+                        LanguageToggle(
+                            isMalayalam = abIsMalayalam,
+                            onToggle = { abIsMalayalam = it }
+                        )
+                    }
+
+                    OutlinedTextField(
+                        value = abNumberOfCopies,
+                        onValueChange = { 
+                            if (it.all { char -> char.isDigit() }) {
+                                abNumberOfCopies = it
+                                val count = it.toIntOrNull() ?: 1
+                                if (count > 0) {
+                                    val accList = abAccessionNumbers.toMutableList()
+                                    while (accList.size < count) accList.add("")
+                                    while (accList.size > count) accList.removeAt(accList.size - 1)
+                                    abAccessionNumbers = accList
+
+                                    val isbnList = abIsbns.toMutableList()
+                                    while (isbnList.size < count) isbnList.add("")
+                                    while (isbnList.size > count) isbnList.removeAt(isbnList.size - 1)
+                                    abIsbns = isbnList
+
+                                    val locList = abLocations.toMutableList()
+                                    while (locList.size < count) locList.add("")
+                                    while (locList.size > count) locList.removeAt(locList.size - 1)
+                                    abLocations = locList
+
+                                    val priceList = abPrices.toMutableList()
+                                    while (priceList.size < count) priceList.add("")
+                                    while (priceList.size > count) priceList.removeAt(priceList.size - 1)
+                                    abPrices = priceList
+
+                                    val typeList = abBookTypes.toMutableList()
+                                    while (typeList.size < count) typeList.add("Normal")
+                                    while (typeList.size > count) typeList.removeAt(typeList.size - 1)
+                                    abBookTypes = typeList
+                                }
                             }
                         },
                         label = { Text("Number of Copies") },
@@ -3111,182 +3721,132 @@ class MainActivity : ComponentActivity() {
                         )
                     )
 
-                    if (numberOfCopies == "0") {
-                        EditVoiceInputField(
-                            value = unavailabilityReason,
-                            onValueChange = { unavailabilityReason = it },
-                            label = "Reason for Unavailability (Mandatory)",
-                            onVoiceInput = { onVoiceInput(isMalayalam, it) },
-                            borderColor = Color.Red
-                        )
-                    }
-
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(
-                            checked = canBeBorrowed,
-                            onCheckedChange = { canBeBorrowed = it },
-                            colors = CheckboxDefaults.colors(checkedColor = mainColor)
-                        )
-                        Text("Can be borrowed", color = mainColor)
-                    }
-
-                    Spacer(modifier = Modifier.height(24.dp))
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        TextButton(onClick = onDismiss) { Text("Cancel", color = if (isDarkMode) Color.LightGray else Color.Gray) }
-                        Button(
-                            onClick = {
-                                val newCount = numberOfCopies.toIntOrNull() ?: book.numberOfCopies
-                                
-                                if (newCount == 0 && unavailabilityReason.isBlank()) {
-                                    showToast("Please provide a reason for unavailability")
-                                    return@Button
-                                }
-
-                                val updatedCopies = if (newCount > book.numberOfCopies) {
-                                    val list = book.copies.toMutableList()
-                                    for (i in (book.numberOfCopies + 1)..newCount) {
-                                        list.add(BookCopy(copyNumber = "${book.accessionNumber}-C$i"))
-                                    }
-                                    list
-                                } else if (newCount < book.numberOfCopies) {
-                                    val lent = book.copies.filter { it.status == "Borrowed" }
-                                    if (newCount < lent.size) {
-                                        showToast("Cannot decrease below currently lent copies (${lent.size})")
-                                        return@Button
-                                    }
-                                    val available = book.copies.filter { it.status == "Available" }
-                                    (lent + available).take(newCount)
-                                } else {
-                                    book.copies
-                                }
-                                
-                                val availCount = updatedCopies.count { it.status == "Available" }
-                                val borrowCount = updatedCopies.count { it.status == "Borrowed" }
-                                val finalStatus = when {
-                                    availCount > 0 -> "Available"
-                                    borrowCount > 0 -> "Borrowed"
-                                    newCount == 0 -> "Unavailable: $unavailabilityReason"
-                                    else -> "Unavailable"
-                                }
-
-                                onSave(book.copy(
-                                    accessionNumber = accessionNumber,
-                                    isbn = if(isbn.isBlank()) null else isbn,
-                                    title = title, author = author, category = category, 
-                                    publisherName = if(publisherName.isBlank()) null else publisherName,
-                                    yearOfPublication = yearOfPublication.toIntOrNull(),
-                                    callNumber = if(callNumber.isBlank()) null else callNumber,
-                                    location = location,
-                                    price = price.toDoubleOrNull(),
-                                    canBeBorrowed = if (newCount == 0) false else canBeBorrowed,
-                                    numberOfCopies = newCount,
-                                    status = finalStatus,
-                                    language = language,
-                                    bookType = bookType,
-                                    unavailabilityReason = if (newCount == 0) unavailabilityReason else null
-                                ).apply {
-                                    copies = updatedCopies
-                                })
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = mainColor, contentColor = if (isDarkMode) Color(0xFF452719) else Color.White)
-                        ) { Text("Update") }
-                    }
-                }
-            }
-        }
-    }
-
-    @Composable
-    fun AddBookDialog(initialBook: Book? = null, onDismiss: () -> Unit, onVoiceInput: (Boolean, (String) -> Unit) -> Unit = { _, _ -> }, onSave: (Book) -> Unit) {
-        var isMalayalam by remember { mutableStateOf(true) }
-        var isbn by remember { mutableStateOf(initialBook?.isbn ?: "") }
-        var accessionNumber by remember { mutableStateOf(initialBook?.accessionNumber ?: "") }
-        var title by remember { mutableStateOf(initialBook?.title ?: "") }
-        var author by remember { mutableStateOf(initialBook?.author ?: "") }
-        var category by remember { mutableStateOf(initialBook?.category ?: "") }
-        var publisherName by remember { mutableStateOf(initialBook?.publisherName ?: "") }
-        var yearOfPublication by remember { mutableStateOf(initialBook?.yearOfPublication?.toString() ?: "") }
-        var callNumber by remember { mutableStateOf(initialBook?.callNumber ?: "") }
-        var location by remember { mutableStateOf(initialBook?.location ?: "") }
-        var price by remember { mutableStateOf(initialBook?.price?.toString() ?: "") }
-        var bookType by remember { mutableStateOf("Normal") }
-        var language by remember { mutableStateOf("Malayalam") }
-        var numberOfCopies by remember { mutableStateOf("1") }
-        var unavailabilityReason by remember { mutableStateOf("") }
-        var errorMessage by remember { mutableStateOf("") }
-
-        // Auto-generate Call Number: VAS/M format
-        LaunchedEffect(title, author) {
-            if (title.isNotBlank() && author.isNotBlank()) {
-                val suggested = LanguageUtils.generateCallNumber(title, author)
-                if (suggested.isNotEmpty()) {
-                    callNumber = suggested
-                }
-            }
-        }
-
-        val mainColor = if (isDarkMode) Color(0xFFD7CCC8) else Color(0xFF452719)
-        val cardBg = if (isDarkMode) Color(0xFF1E1916) else Color.White
-        val textColor = if (isDarkMode) Color(0xFFE0E0E0) else Color(0xFF1E293B)
-        val borderColor = if (isDarkMode) Color.Gray.copy(alpha = 0.5f) else Color.LightGray
-
-        Dialog(onDismissRequest = onDismiss) {
-            Card(
-                modifier = Modifier.fillMaxWidth().padding(16.dp),
-                shape = RoundedCornerShape(28.dp),
-                colors = CardDefaults.cardColors(containerColor = cardBg)
-            ) {
-                Column(modifier = Modifier.padding(24.dp).verticalScroll(rememberScrollState())) {
-                    Text(
-                        text = "Add New Book",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = textColor
-                    )
-                    Text(
-                        text = "Accession ID will be auto-generated if left blank",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (isDarkMode) Color.LightGray else Color(0xFF64748B)
-                    )
                     Spacer(modifier = Modifier.height(16.dp))
+                    Text("Copy Details", style = MaterialTheme.typography.titleMedium, color = mainColor, fontWeight = FontWeight.Bold)
+                    
+                    abAccessionNumbers.forEachIndexed { index, _ ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = surfaceBeige.copy(alpha = 0.3f)),
+                            border = BorderStroke(0.5.dp, borderColor.copy(alpha = 0.5f))
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text("Copy #${index + 1}", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = mainColor)
+                                Spacer(modifier = Modifier.height(8.dp))
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("Voice Language:", style = MaterialTheme.typography.labelMedium, color = textColor)
-                        LanguageToggle(
-                            isMalayalam = isMalayalam,
-                            onToggle = { isMalayalam = it }
-                        )
+                                val accValue = abAccessionNumbers[index]
+                                val isDuplicateInDB = accValue.isNotBlank() && allBooks.any { it.accessionNumber == accValue }
+                                val isDuplicateInForm = accValue.isNotBlank() && abAccessionNumbers.filterIndexed { i, s -> i != index && s == accValue }.isNotEmpty()
+                                val isError = isDuplicateInDB || isDuplicateInForm
+                                
+                                EditVoiceInputField(
+                                    value = accValue,
+                                    onValueChange = { newValue ->
+                                        val newList = abAccessionNumbers.toMutableList()
+                                        newList[index] = newValue
+                                        abAccessionNumbers = newList
+                                    },
+                                    label = "Stock Number",
+                                    onVoiceInput = { onVoiceInput(false, it) },
+                                    borderColor = borderColor,
+                                    isError = isError,
+                                    errorText = when {
+                                        isDuplicateInDB -> "Book already exists in library"
+                                        isDuplicateInForm -> "Duplicate Stock Number in form"
+                                        else -> ""
+                                    }
+                                )
+
+                                EditVoiceInputField(
+                                    value = abIsbns[index],
+                                    onValueChange = { newValue ->
+                                        val newList = abIsbns.toMutableList()
+                                        newList[index] = newValue
+                                        abIsbns = newList
+                                    },
+                                    label = "ISBN",
+                                    onVoiceInput = { onVoiceInput(false, it) },
+                                    borderColor = borderColor
+                                )
+
+                                EditVoiceInputField(
+                                    value = abLocations[index],
+                                    onValueChange = { newValue ->
+                                        val newList = abLocations.toMutableList()
+                                        newList[index] = newValue
+                                        abLocations = newList
+                                    },
+                                    label = "Rack Location",
+                                    onVoiceInput = { onVoiceInput(false, it) },
+                                    borderColor = borderColor
+                                )
+
+                                EditVoiceInputField(
+                                    value = abPrices[index],
+                                    onValueChange = { newValue ->
+                                        val newList = abPrices.toMutableList()
+                                        newList[index] = newValue
+                                        abPrices = newList
+                                    },
+                                    label = "Price",
+                                    onVoiceInput = { onVoiceInput(false, it) },
+                                    borderColor = borderColor
+                                )
+
+                                // Book Type Dropdown per copy
+                                var typeExpanded by remember { mutableStateOf(false) }
+                                Box(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                                    OutlinedTextField(
+                                        value = abBookTypes[index],
+                                        onValueChange = {},
+                                        readOnly = true,
+                                        label = { Text("Book Type") },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        trailingIcon = {
+                                            IconButton(onClick = { typeExpanded = true }) {
+                                                Icon(Icons.Default.ArrowDropDown, null, tint = mainColor)
+                                            }
+                                        },
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedTextColor = mainColor,
+                                            unfocusedTextColor = mainColor,
+                                            focusedBorderColor = mainColor,
+                                            unfocusedBorderColor = borderColor,
+                                            focusedLabelColor = mainColor,
+                                            unfocusedLabelColor = Color.Gray
+                                        )
+                                    )
+                                    DropdownMenu(
+                                        expanded = typeExpanded,
+                                        onDismissRequest = { typeExpanded = false },
+                                        modifier = Modifier.background(cardBg)
+                                    ) {
+                                        listOf("Normal", "Reference").forEach { type ->
+                                            DropdownMenuItem(
+                                                text = { Text(type, color = mainColor) },
+                                                onClick = {
+                                                    val newList = abBookTypes.toMutableList()
+                                                    newList[index] = type
+                                                    abBookTypes = newList
+                                                    typeExpanded = false
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
 
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    OutlinedTextField(
-                        value = accessionNumber,
-                        onValueChange = { accessionNumber = it },
-                        label = { Text("Accession Number") },
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = mainColor,
-                            unfocusedTextColor = mainColor,
-                            focusedBorderColor = mainColor,
-                            unfocusedBorderColor = borderColor,
-                            focusedLabelColor = mainColor,
-                            unfocusedLabelColor = Color.Gray
-                        )
-                    )
-                    VoiceInputField(value = isbn, onValueChange = { isbn = it }, label = "ISBN", onVoiceInput = { onVoiceInput(false, it) })
-                    VoiceInputField(value = title, onValueChange = { title = it }, label = "Book Title", onVoiceInput = { onVoiceInput(isMalayalam, it) })
-                    VoiceInputField(value = author, onValueChange = { author = it }, label = "Author Name", onVoiceInput = { onVoiceInput(isMalayalam, it) })
+                    VoiceInputField(value = abTitle, onValueChange = { abTitle = it }, label = "Book Title", onVoiceInput = { onVoiceInput(abIsMalayalam, it) })
+                    VoiceInputField(value = abAuthor, onValueChange = { abAuthor = it }, label = "Author Name", onVoiceInput = { onVoiceInput(abIsMalayalam, it) })
 
                     // Language Dropdown
                     var langExpanded by remember { mutableStateOf(false) }
                     Box(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                         OutlinedTextField(
-                            value = language,
+                            value = abLanguage,
                             onValueChange = {},
                             readOnly = true,
                             label = { Text("Book Language") },
@@ -3314,8 +3874,8 @@ class MainActivity : ComponentActivity() {
                                 DropdownMenuItem(
                                     text = { Text(lang, color = mainColor) },
                                     onClick = {
-                                        language = lang
-                                        isMalayalam = lang == "Malayalam"
+                                        abLanguage = lang
+                                        abIsMalayalam = lang == "Malayalam"
                                         langExpanded = false
                                     }
                                 )
@@ -3327,7 +3887,7 @@ class MainActivity : ComponentActivity() {
                     var catExpanded by remember { mutableStateOf(false) }
                     Box(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                         OutlinedTextField(
-                            value = category,
+                            value = abCategory,
                             onValueChange = {},
                             readOnly = true,
                             label = { Text("Category") },
@@ -3355,7 +3915,7 @@ class MainActivity : ComponentActivity() {
                                 DropdownMenuItem(
                                     text = { Text(cat, color = mainColor) },
                                     onClick = {
-                                        category = cat
+                                        abCategory = cat
                                         catExpanded = false
                                     }
                                 )
@@ -3363,78 +3923,27 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // Book Type Dropdown
-                    var typeExpanded by remember { mutableStateOf(false) }
-                    Box(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                        OutlinedTextField(
-                            value = bookType,
-                            onValueChange = {},
-                            readOnly = true,
-                            label = { Text("Book Type") },
-                            modifier = Modifier.fillMaxWidth(),
-                            trailingIcon = {
-                                IconButton(onClick = { typeExpanded = true }) {
-                                    Icon(Icons.Default.ArrowDropDown, null, tint = mainColor)
-                                }
-                            },
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = mainColor,
-                                unfocusedTextColor = mainColor,
-                                focusedBorderColor = mainColor,
-                                unfocusedBorderColor = borderColor,
-                                focusedLabelColor = mainColor,
-                                unfocusedLabelColor = Color.Gray
-                            )
-                        )
-                        DropdownMenu(
-                            expanded = typeExpanded,
-                            onDismissRequest = { typeExpanded = false },
-                            modifier = Modifier.background(cardBg)
-                        ) {
-                            listOf("Normal", "Reference").forEach { type ->
-                                DropdownMenuItem(
-                                    text = { Text(type, color = mainColor) },
-                                    onClick = {
-                                        bookType = type
-                                        typeExpanded = false
-                                    }
-                                )
-                            }
-                        }
-                    }
-
-                    VoiceInputField(value = publisherName, onValueChange = { publisherName = it }, label = "Publisher", onVoiceInput = { onVoiceInput(isMalayalam, it) })
-                    VoiceInputField(value = yearOfPublication, onValueChange = { if (it.all { char -> char.isDigit() }) yearOfPublication = it }, label = "Year of Publication", onVoiceInput = { onVoiceInput(false, it) })
-                    VoiceInputField(value = callNumber, onValueChange = { callNumber = it }, label = "Call Number", onVoiceInput = { onVoiceInput(false, it) })
-                    VoiceInputField(value = location, onValueChange = { location = it }, label = "Rack Location", onVoiceInput = { onVoiceInput(false, it) })
-                    VoiceInputField(value = price, onValueChange = { if (it.all { char -> char.isDigit() || char == '.' }) price = it }, label = "Price", onVoiceInput = { onVoiceInput(false, it) })
-
-                    OutlinedTextField(
-                        value = numberOfCopies,
+                    VoiceInputField(value = abPublisherName, onValueChange = { abPublisherName = it }, label = "Publisher", onVoiceInput = { onVoiceInput(abIsMalayalam, it) })
+                    VoiceInputField(value = abYearOfPublication, onValueChange = { if (it.all { char -> char.isDigit() }) abYearOfPublication = it }, label = "Year of Publication", onVoiceInput = { onVoiceInput(false, it) })
+                    VoiceInputField(
+                        value = abCallNumber, 
                         onValueChange = { 
-                            if (it.all { char -> char.isDigit() }) {
-                                numberOfCopies = it 
-                            }
-                        },
-                        label = { Text("Number of Copies") },
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = mainColor,
-                            unfocusedTextColor = mainColor,
-                            focusedBorderColor = mainColor,
-                            unfocusedBorderColor = borderColor,
-                            focusedLabelColor = mainColor,
-                            unfocusedLabelColor = Color.Gray
-                        )
+                            abCallNumber = it
+                            abIsCallNumberAuto = false 
+                        }, 
+                        label = "Call Number", 
+                        onVoiceInput = { onVoiceInput(false, {
+                            abCallNumber = it
+                            abIsCallNumberAuto = false
+                        }) }
                     )
 
-                    if (numberOfCopies == "0") {
+                    if (abNumberOfCopies.toIntOrNull() == 0) {
                         EditVoiceInputField(
-                            value = unavailabilityReason,
-                            onValueChange = { unavailabilityReason = it },
+                            value = abUnavailabilityReason,
+                            onValueChange = { abUnavailabilityReason = it },
                             label = "Reason for Unavailability (Mandatory)",
-                            onVoiceInput = { onVoiceInput(isMalayalam, it) },
+                            onVoiceInput = { onVoiceInput(abIsMalayalam, it) },
                             borderColor = Color.Red
                         )
                     }
@@ -3445,67 +3954,73 @@ class MainActivity : ComponentActivity() {
                         Spacer(modifier = Modifier.width(12.dp))
                         Button(
                             onClick = { 
-                                val copiesNum = numberOfCopies.toIntOrNull() ?: 0
+                                val copiesNum = abNumberOfCopies.toIntOrNull() ?: 1
                                 
-                                if (copiesNum == 0 && unavailabilityReason.isBlank()) {
-                                    errorMessage = "Please provide a reason for unavailability."
+                                if (copiesNum == 0 && abUnavailabilityReason.isBlank()) {
+                                    showToast("Please provide a reason for unavailability.")
                                     return@Button
                                 }
 
-                                if(title.isNotBlank() && author.isNotBlank() && category.isNotBlank() && location.isNotBlank() && copiesNum >= 0) {
-                                    val isMal = language == "Malayalam"
+                                if(abTitle.isNotBlank() && abAuthor.isNotBlank() && abCategory.isNotBlank() && 
+                                    abCallNumber.isNotBlank() && copiesNum >= 0 && 
+                                    abAccessionNumbers.all { it.isNotBlank() } &&
+                                    abLocations.all { it.isNotBlank() } &&
+                                    abPrices.all { it.isNotBlank() }) {
+
+                                    if (abAccessionNumbers.distinct().size != abAccessionNumbers.size) {
+                                        showToast("Stock Numbers must be unique.")
+                                        return@Button
+                                    }
                                     
-                                    // Clean values based on requirements
-                                    val finalTitle = if (isMal) LanguageUtils.correctMalayalam(title.trim()) else LanguageUtils.transliterateToEnglish(title)
-                                    val finalAuthor = if (isMal) LanguageUtils.correctMalayalam(author.trim()) else LanguageUtils.transliterateToEnglish(author)
-                                    val finalPublisher = if (isMal) LanguageUtils.correctMalayalam(publisherName.trim()) else LanguageUtils.transliterateToEnglish(publisherName)
-                                    
-                                    val finalIsbn = LanguageUtils.transliterateToEnglish(isbn)
-                                    val finalAccession = LanguageUtils.transliterateToEnglish(accessionNumber)
-                                    val finalCall = LanguageUtils.transliterateToEnglish(callNumber)
-                                    val finalLocation = LanguageUtils.transliterateToEnglish(location)
+                                    val existingAcc = abAccessionNumbers.map { it.trim() }.find { acc ->
+                                        allBooks.any { it.accessionNumber == acc }
+                                    }
+                                    if (existingAcc != null) {
+                                        showToast("Stock Number $existingAcc already exists in library.")
+                                        return@Button
+                                    }
+
+                                    val isMal = abLanguage == "Malayalam"
+                                    val finalTitle = if (isMal) LanguageUtils.correctMalayalam(abTitle.trim()) else LanguageUtils.transliterateToEnglishPreserveSpaces(abTitle)
+                                    val finalAuthor = if (isMal) LanguageUtils.correctMalayalam(abAuthor.trim()) else LanguageUtils.transliterateToEnglishPreserveSpaces(abAuthor)
+                                    val finalPublisher = if (isMal) LanguageUtils.correctMalayalam(abPublisherName.trim()) else LanguageUtils.transliterateToEnglishPreserveSpaces(abPublisherName)
+                                    val finalCall = LanguageUtils.transliterateToEnglishPreserveSpaces(abCallNumber)
                                     
                                     val finalStatus = when {
                                         copiesNum > 0 -> "Available"
-                                        copiesNum == 0 -> "Unavailable: $unavailabilityReason"
+                                        copiesNum == 0 -> "Unavailable: $abUnavailabilityReason"
                                         else -> "Unavailable"
                                     }
 
-                                    onSave(Book(
-                                        accessionNumber = finalAccession, 
-                                        isbn = if(finalIsbn.isBlank()) null else finalIsbn,
-                                        title = finalTitle, 
-                                        author = finalAuthor, 
-                                        category = category, 
-                                        publisherName = if(finalPublisher.isBlank()) null else finalPublisher,
-                                        yearOfPublication = yearOfPublication.filter { it.isDigit() }.toIntOrNull(),
-                                        callNumber = if(finalCall.isBlank()) null else finalCall,
-                                        location = finalLocation, 
-                                        price = price.filter { it.isDigit() || it == '.' }.toDoubleOrNull(),
-                                        numberOfCopies = copiesNum,
-                                        bookType = bookType,
-                                        language = language,
-                                        status = finalStatus,
-                                        unavailabilityReason = if (copiesNum == 0) unavailabilityReason else null
-                                    ))
+                                    val booksToSave = abAccessionNumbers.mapIndexed { index, acc ->
+                                        Book(
+                                            accessionNumber = LanguageUtils.transliterateToEnglish(acc), 
+                                            isbn = if(abIsbns[index].isBlank()) null else LanguageUtils.transliterateToEnglishPreserveSpaces(abIsbns[index]),
+                                            title = finalTitle, 
+                                            author = finalAuthor, 
+                                            category = abCategory, 
+                                            publisherName = if(finalPublisher.isBlank()) null else finalPublisher,
+                                            yearOfPublication = abYearOfPublication.filter { it.isDigit() }.toIntOrNull(),
+                                            callNumber = if(finalCall.isBlank()) null else finalCall,
+                                            location = LanguageUtils.transliterateToEnglishPreserveSpaces(abLocations[index]),
+                                            price = abPrices[index].filter { it.isDigit() }.toIntOrNull(),
+                                            numberOfCopies = 1, // Each doc represents 1 physical copy now
+                                            bookType = abBookTypes[index],
+                                            language = abLanguage,
+                                            status = finalStatus,
+                                            libraryId = libraryId,
+                                            unavailabilityReason = if (copiesNum == 0) abUnavailabilityReason else null
+                                        )
+                                    }
+                                    
+                                    onSave(booksToSave)
                                 } else {
-                                    errorMessage = "All fields (Title, Author, Category, Location) are mandatory."
+                                    showToast("All fields (Title, Author, Category, Location) are mandatory.")
                                 }
                             },
                             shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = mainColor, contentColor = if (isDarkMode) Color(0xFF452719) else Color.White)
                         ) { Text("Save to Library") }
-                    }
-                    
-                    if (errorMessage.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text(
-                            text = errorMessage,
-                            color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodySmall,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth()
-                        )
                     }
                 }
             }
@@ -3604,27 +4119,46 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    fun EditVoiceInputField(value: String, onValueChange: (String) -> Unit, label: String, onVoiceInput: ((String) -> Unit) -> Unit, borderColor: Color) {
+    fun EditVoiceInputField(
+        value: String, 
+        onValueChange: (String) -> Unit, 
+        label: String, 
+        onVoiceInput: ((String) -> Unit) -> Unit, 
+        borderColor: Color,
+        isError: Boolean = false,
+        errorText: String = ""
+    ) {
         val mainColor = if (isDarkMode) Color(0xFFD7CCC8) else Color(0xFF452719)
-        OutlinedTextField(
-            value = value,
-            onValueChange = onValueChange,
-            label = { Text(label) },
-            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedTextColor = mainColor,
-                unfocusedTextColor = mainColor,
-                focusedLabelColor = mainColor,
-                unfocusedLabelColor = Color.Gray,
-                focusedBorderColor = mainColor,
-                unfocusedBorderColor = borderColor
-            ),
-            trailingIcon = {
-                IconButton(onClick = { onVoiceInput { onValueChange(it) } }) {
-                    Icon(Icons.Default.Mic, contentDescription = "Voice Input", tint = mainColor)
+        Column {
+            OutlinedTextField(
+                value = value,
+                onValueChange = onValueChange,
+                label = { Text(label) },
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                isError = isError,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = if (isError) Color.Red else mainColor,
+                    unfocusedTextColor = if (isError) Color.Red else mainColor,
+                    focusedLabelColor = if (isError) Color.Red else mainColor,
+                    unfocusedLabelColor = if (isError) Color.Red else Color.Gray,
+                    focusedBorderColor = if (isError) Color.Red else mainColor,
+                    unfocusedBorderColor = if (isError) Color.Red else borderColor
+                ),
+                trailingIcon = {
+                    IconButton(onClick = { onVoiceInput { onValueChange(it) } }) {
+                        Icon(Icons.Default.Mic, contentDescription = "Voice Input", tint = mainColor)
+                    }
                 }
+            )
+            if (isError && errorText.isNotEmpty()) {
+                Text(
+                    text = errorText,
+                    color = Color.Red,
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(start = 16.dp, top = 2.dp)
+                )
             }
-        )
+        }
     }
 
     @Composable
@@ -3995,7 +4529,7 @@ class MainActivity : ComponentActivity() {
                             ) {
                                 Column(modifier = Modifier.padding(12.dp)) {
                                     Text(req.title, fontWeight = FontWeight.Bold, color = textColor)
-                                    Text("Acc: ${req.accessionNumber} | Copy: C${req.copyNumber}", fontSize = 11.sp, color = mainColor)
+                                    Text("Stock: ${req.accessionNumber} | Copy: C${req.copyNumber}", fontSize = 11.sp, color = mainColor)
                                     req.returnDate?.let {
                                         Text("Returned on: ${SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(Date(it))}", fontSize = 11.sp, color = Color(0xFF2E7D32))
                                     }

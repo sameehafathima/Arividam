@@ -35,16 +35,16 @@ object LanguageUtils {
 
     private val malayalamNumbers by lazy {
         mapOf(
-            "ഒന്ന്" to 1, "ഒന്നാമത്തെ" to 1, "ഒരു" to 1,
-            "രണ്ട്" to 2, "രണ്ടാമത്തെ" to 2,
-            "മൂന്ന്" to 3, "മൂന്നാമത്തെ" to 3,
-            "നാല്" to 4, "നാലാമത്തെ" to 4,
-            "അഞ്ച്" to 5, "അഞ്ചാമത്തെ" to 5,
-            "ആറ്" to 6, "ആറാമത്തെ" to 6,
-            "ഏഴ്" to 7, "ഏഴാമത്തെ" to 7,
-            "എട്ട്" to 8, "എട്ടാമത്തെ" to 8,
-            "ഒൻപത്" to 9, "ഒൻപതാമത്തെ" to 9,
-            "പത്ത്" to 10, "പത്താമത്തെ" to 10
+            "ഒന്ന്" to 1, "ഒന്നാമത്തെ" to 1, "ഒരു" to 1, "one" to 1, "1" to 1, "won" to 1,
+            "രണ്ട്" to 2, "രണ്ടാമത്തെ" to 2, "two" to 2, "2" to 2, "to" to 2, "too" to 2,
+            "മൂന്ന്" to 3, "മൂന്നാമത്തെ" to 3, "three" to 3, "3" to 3,
+            "നാല്" to 4, "നാലാമത്തെ" to 4, "four" to 4, "4" to 4, "for" to 4,
+            "അഞ്ച്" to 5, "അഞ്ചാമത്തെ" to 5, "five" to 5, "5" to 5,
+            "ആറ്" to 6, "ആറാമത്തെ" to 6, "six" to 6, "6" to 6,
+            "ഏഴ്" to 7, "ഏഴാമത്തെ" to 7, "seven" to 7, "7" to 7,
+            "എട്ട്" to 8, "എട്ടാമത്തെ" to 8, "eight" to 8, "8" to 8, "ate" to 8,
+            "ഒൻപത്" to 9, "ഒൻപതാമത്തെ" to 9, "nine" to 9, "9" to 9,
+            "പത്ത്" to 10, "പത്താമത്തെ" to 10, "ten" to 10, "10" to 10
         )
     }
 
@@ -69,7 +69,7 @@ object LanguageUtils {
 
     fun parseMalayalamNumber(text: String?): Int? {
         if (text == null) return null
-        val lower = text.trim()
+        val lower = text.trim().lowercase()
         
         // 1. Try direct digits
         val digits = lower.filter { it.isDigit() }
@@ -79,7 +79,16 @@ object LanguageUtils {
         val mappedDigits = lower.map { charMap[it] ?: it }.joinToString("").filter { it.isDigit() }
         if (mappedDigits.isNotEmpty()) return mappedDigits.toIntOrNull()
 
-        // 3. Try Malayalam words
+        // 3. Try Malayalam and English words
+        val words = lower.split(Regex("[\\s.,]+"))
+        for (word in words) {
+            val cleanedWord = word.trim()
+            if (malayalamNumbers.containsKey(cleanedWord)) {
+                return malayalamNumbers[cleanedWord]
+            }
+        }
+        
+        // Fallback to contains for multi-word phrases like "മൂന്ന് എണ്ണം"
         for ((word, value) in malayalamNumbers) {
             if (lower.contains(word)) return value
         }
@@ -88,7 +97,7 @@ object LanguageUtils {
     }
 
     fun formatRackNumber(input: String?): String {
-        return transliterateToEnglish(input ?: "")
+        return transliterateToEnglishPreserveSpaces(input ?: "")
     }
 
     /**
@@ -208,7 +217,7 @@ object LanguageUtils {
         
         val result = StringBuilder()
         for (char in text) {
-            if (char in 'A'..'Z' || char in 'a'..'z') {
+            if (char in 'A'..'Z' || char in 'a'..'z' || char in '0'..'9') {
                 result.append(char)
             } else {
                 result.append(map[char] ?: "")
@@ -219,7 +228,7 @@ object LanguageUtils {
 
     fun generateCallNumber(title: String?, author: String?): String {
         val engAuthor = phoneticToEnglish(author).filter { it.isLetter() }.take(3)
-        val engTitle = phoneticToEnglish(title).filter { it.isLetter() }.take(1)
+        val engTitle = phoneticToEnglish(title).filter { it.isLetterOrDigit() }.take(1)
         
         return if (engAuthor.isNotEmpty() && engTitle.isNotEmpty()) {
             "$engAuthor/$engTitle".uppercase()

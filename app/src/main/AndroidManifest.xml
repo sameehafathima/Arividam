@@ -17,7 +17,7 @@
         android:label="@string/app_name"
         android:roundIcon="@drawable/logo"
         android:supportsRtl="true"
-        android:theme="@style/Theme.Mozhi">
+        android:theme="@style/Theme.Arividam">
         <activity android:name=".SplashActivity"
             android:exported="true">
             <intent-filter>
@@ -40,7 +40,7 @@
                 <category android:name="android.intent.category.BROWSABLE" />
 
                 <data
-                    android:host="mozhi.page.link"
+                    android:host="arividam.page.link"
                     android:scheme="https" />
             </intent-filter>
         </activity>

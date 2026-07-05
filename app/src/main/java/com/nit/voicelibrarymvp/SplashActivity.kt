@@ -24,7 +24,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import com.google.firebase.firestore.FirebaseFirestore
-import com.nit.voicelibrarymvp.ui.theme.MozhiTheme
+import com.nit.voicelibrarymvp.ui.theme.ArividamTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
@@ -37,7 +37,7 @@ class SplashActivity : ComponentActivity() {
         val isDarkMode = getSharedPreferences("user_prefs", MODE_PRIVATE).getBoolean("isDarkMode", false)
 
         setContent {
-            MozhiTheme(darkTheme = isDarkMode) {
+            ArividamTheme(darkTheme = isDarkMode) {
                 SplashScreen(isDarkMode)
             }
         }
@@ -71,7 +71,7 @@ fun SplashScreen(isDarkMode: Boolean) {
             )
             Spacer(modifier = Modifier.height(24.dp))
             Text(
-                text = "Mozhi",
+                text = "Arividam",
                 fontSize = 32.sp,
                 fontWeight = FontWeight.ExtraBold,
                 color = mainColor

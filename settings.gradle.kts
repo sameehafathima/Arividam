@@ -23,6 +23,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Mozhi"
+rootProject.name = "Arividam"
 include(":app")
  

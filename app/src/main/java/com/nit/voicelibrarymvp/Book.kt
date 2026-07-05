@@ -6,7 +6,8 @@ import androidx.room.PrimaryKey
 import com.google.firebase.firestore.PropertyName
 
 data class BookCopy(
-    @get:PropertyName("copyNumber") @set:PropertyName("copyNumber") var copyNumber: String = "", 
+    @get:PropertyName("accession_number") @set:PropertyName("accession_number") var accessionNumber: String = "", 
+    @get:PropertyName("copyNumber") @set:PropertyName("copyNumber") var copyNumber: String = "", // Legacy field
     @get:PropertyName("status") @set:PropertyName("status") var status: String = "Available",
     @get:PropertyName("borrower_id") @set:PropertyName("borrower_id") var borrowerId: String? = null,
     @get:PropertyName("borrowerName") @set:PropertyName("borrowerName") var borrowerName: String? = null,
@@ -36,7 +37,7 @@ data class Book(
     @get:PropertyName("year_of_publication") @set:PropertyName("year_of_publication") var yearOfPublication: Int? = null,
     @get:PropertyName("call_number") @set:PropertyName("call_number") var callNumber: String? = null,
     @get:PropertyName("location") @set:PropertyName("location") var location: String = "",
-    @get:PropertyName("price") @set:PropertyName("price") var price: Double? = null,
+    @get:PropertyName("price") @set:PropertyName("price") var price: Int? = null,
     @get:PropertyName("can_be_borrowed") @set:PropertyName("can_be_borrowed") var canBeBorrowed: Boolean = true,
     @get:PropertyName("status") @set:PropertyName("status") var status: String = "Available", 
     @get:PropertyName("number_of_copies") @set:PropertyName("number_of_copies") var numberOfCopies: Int = 1,

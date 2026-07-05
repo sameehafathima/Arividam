@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Mozhi</string>
+    <string name="app_name">Arividam</string>
     <!-- Replace with your actual Web Client ID from Firebase Console -> Authentication -> Google -> Web SDK Configuration -->
     <string name="default_web_client_id">602001378262-v7b3v8v8v8v8v8v8v8v8v8v8v8v8v8v8.apps.googleusercontent.com</string>
 </resources>

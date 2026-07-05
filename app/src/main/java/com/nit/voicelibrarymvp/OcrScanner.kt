@@ -389,7 +389,7 @@ fun OcrReviewScreen(
         OutlinedTextField(
             value = accession,
             onValueChange = { accession = it },
-            label = { Text("Accession Number") },
+            label = { Text("Stock Number") },
             modifier = Modifier.fillMaxWidth()
         )
 
